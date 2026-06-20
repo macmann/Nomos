@@ -10,6 +10,7 @@ from app.models import ActionRun, Call, CallEvent, CallExtraction, CallTranscrip
 from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
+from app.routes.websocket import send_test_greeting
 from app.settings_service import SettingsService
 
 def _bool_setting(value, default=False):
@@ -52,6 +53,14 @@ def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(cu
         call.status='failed'; call.error_message=str(e); db.add(CallEvent(call_id=call.id,event_type='error',event_payload={'message':str(e)}))
     db.commit(); msg=f'Call {call.id} created. SID: {call.twilio_call_sid or call.error_message}'
     return msg
+
+@router.post('/calls/{call_id}/debug-send-greeting')
+async def debug_send_greeting(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
+    ok = await send_test_greeting(call_id)
+    db.add(CallEvent(call_id=call_id, event_type='debug_greeting_requested', event_payload={'success': ok}))
+    db.commit()
+    return JSONResponse({'success': ok, 'message': 'Greeting sent' if ok else 'No active websocket session for this call'})
+
 @router.post('/calls/{call_id}/extract')
 async def extract(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
     call=db.get(Call,call_id); ss=SettingsService(db,get_settings().app_encryption_key); data=await OpenAIAgentService(ss).extract(call.case, db.query(CallTranscript).filter_by(call_id=call_id).all(), db.query(CallEvent).filter_by(call_id=call_id).all())

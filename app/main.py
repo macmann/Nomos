@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,7 +7,10 @@ from .routes import auth, dashboard, cases, calls, settings, twilio, websocket
 app=FastAPI(title='Nomos Clearing Voice Agent')
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 @app.on_event('startup')
-def startup(): init_db()
+def startup():
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger().setLevel(logging.INFO)
+    init_db()
 @app.get('/health')
 def health(): return {'status':'ok'}
 @app.head('/')
