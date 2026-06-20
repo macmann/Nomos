@@ -79,3 +79,15 @@ Open **Calls**, select a call, and review metadata, events, transcript, structur
 ## Trigger customer email action
 
 If an extraction has `next_action = trigger_customer_email_agent`, click **Trigger next action manually** or let the post-call router run. MCP Mail uses saved server settings and supports dry-run mode through `mcp_real_email_enabled=false`.
+
+## Twilio Media Streams safe-mode testing
+
+1. In **Settings**, set `voice_safe_mode=true`, `stt_enabled=false`, `agent_enabled=false`, and `tts_enabled=false`.
+2. Start an outbound call.
+3. Speak for 10 seconds after the call connects.
+4. Confirm the call does not crash or drop because of a backend exception.
+5. Confirm Render logs show `twilio_media_event` entries.
+6. Confirm the Call Detail page shows the media event count increasing.
+7. Then set `voice_safe_mode=false` and enable STT only with `stt_enabled=true`.
+8. Then enable the agent only with `agent_enabled=true` after STT is stable.
+9. Then enable TTS with `tts_enabled=true` after STT and agent responses are stable.
