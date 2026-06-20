@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<div class="grid grid-cols-3 gap-4">{% for k,v in stats.items() %}<div class="bg-white p-5 rounded shadow"><div class="text-sm text-slate-500">{{ k }}</div><div class="text-3xl font-bold">{{ v }}</div></div>{% endfor %}</div>{% endblock %}
