@@ -11,14 +11,14 @@ from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
 from app.settings_service import SettingsService
-router=APIRouter(); templates=Jinja2Templates('app/templates')
+router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
 def calls(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
-    return templates.TemplateResponse('calls.html', {'request':request,'title':'Call History','calls':db.query(Call).order_by(Call.created_at.desc()).all()})
+    return templates.TemplateResponse(request, 'calls.html', {'title':'Call History','calls':db.query(Call).order_by(Call.created_at.desc()).all()})
 @router.get('/calls/{call_id}')
 def call_detail(call_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     call=db.get(Call,call_id)
-    return templates.TemplateResponse('call_detail.html', {'request':request,'title':'Call Detail','call':call,'events':db.query(CallEvent).filter_by(call_id=call_id).all(),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all()})
+    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':db.query(CallEvent).filter_by(call_id=call_id).all(),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all()})
 @router.post('/calls/outbound')
 @router.post('/api/calls/outbound')
 def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(current_admin)):
