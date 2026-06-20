@@ -11,6 +11,26 @@ from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
 from app.settings_service import SettingsService
+
+def _bool_setting(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1','true','yes','on','enabled'}
+
+def _voice_debug_summary(db, call_id):
+    events = db.query(CallEvent).filter_by(call_id=call_id).all()
+    media_events = [e for e in events if e.event_type == 'twilio_media_received']
+    last_media = media_events[-1].event_payload.get('timestamp') if media_events and media_events[-1].event_payload else None
+    last_error = next((e for e in reversed(events) if e.event_type in {'error','websocket_error'}), None)
+    ss = SettingsService(db, get_settings().app_encryption_key)
+    return {
+        'websocket_connected': any(e.event_type == 'websocket_connected' for e in events),
+        'twilio_start': any(e.event_type == 'twilio_start_received' for e in events),
+        'media_count': len(media_events),
+        'last_media_timestamp': last_media,
+        'last_error': last_error,
+        'voice_safe_mode': _bool_setting(ss.get('voice_safe_mode', 'true'), True),
+    }
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
 def calls(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
@@ -18,7 +38,8 @@ def calls(request:Request, db:Session=Depends(get_db), admin=Depends(current_adm
 @router.get('/calls/{call_id}')
 def call_detail(call_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     call=db.get(Call,call_id)
-    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':db.query(CallEvent).filter_by(call_id=call_id).all(),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all()})
+    events=db.query(CallEvent).filter_by(call_id=call_id).all()
+    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all()})
 @router.post('/calls/outbound')
 @router.post('/api/calls/outbound')
 def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(current_admin)):
