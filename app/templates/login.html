@@ -1,1 +1,25 @@
-<!doctype html><html><head><script src="https://cdn.tailwindcss.com"></script><title>Login</title></head><body class="bg-slate-100"><form method="post" class="max-w-sm mx-auto mt-32 bg-white p-8 rounded shadow"><h1 class="text-xl font-bold mb-4">Nomos Admin Login</h1>{% if error %}<p class="text-red-600">{{ error }}</p>{% endif %}<input name="username" placeholder="Username" class="border p-2 w-full mb-3"><input name="password" type="password" placeholder="Password" class="border p-2 w-full mb-3"><button class="bg-blue-600 text-white px-4 py-2 rounded w-full">Login</button></form></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · Nomos</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="auth-body">
+  <main class="auth-card">
+    <a class="brand auth-brand" href="/login" aria-label="Nomos login">
+      <span class="brand-mark"><img src="https://ycnxtseuegjysdxixcpx.supabase.co/storage/v1/object/public/Public/nomos/White%20Symbol.svg" alt="Nomos logo"></span>
+      <span><strong>Nomos</strong><small>Clearing Voice Agent</small></span>
+    </a>
+    <h1>Welcome back</h1>
+    <p class="muted">Sign in to manage clearing cases, calls, and integrations.</p>
+    {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" class="stack">
+      <label>Username<input name="username" placeholder="Username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" placeholder="Password" autocomplete="current-password" required></label>
+      <button class="button button-primary button-full" type="submit">Login</button>
+    </form>
+  </main>
+</body>
+</html>

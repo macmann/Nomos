@@ -1,1 +1,7 @@
-{% extends 'base.html' %}{% block content %}<form method="post" action="/cases/import-fixtures" enctype="multipart/form-data" class="bg-white p-6 rounded shadow"><input type="file" name="file" class="border p-2"><button class="bg-blue-600 text-white p-2 rounded">Import Fixtures JSON</button></form>{% if result %}<p class="mt-4">{{ result }}</p>{% endif %}{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<form method="post" action="/cases/import-fixtures" enctype="multipart/form-data" class="card stack">
+  <label>Fixtures JSON file<input type="file" name="file" accept="application/json,.json" required></label>
+  <button class="button-primary" type="submit">Import Fixtures JSON</button>
+</form>
+{% endblock %}

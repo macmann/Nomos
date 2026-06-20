@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -32,15 +32,27 @@ async def create_case(request:Request, db:Session=Depends(get_db), admin=Depends
 def import_page(request:Request, admin=Depends(current_admin)): return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures'})
 @router.post('/cases/import-fixtures')
 async def import_fixtures(request:Request, file:UploadFile=File(...), db:Session=Depends(get_db), admin=Depends(current_admin)):
-    raw=await file.read(); payload=json.loads(raw.decode()); items=payload.get('cases', payload if isinstance(payload,list) else [])
+    try:
+        raw=await file.read(); payload=json.loads(raw.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures','error':'Upload a valid UTF-8 JSON fixtures file.'}, status_code=400)
+    items=payload.get('cases', payload if isinstance(payload,list) else [])
+    if not isinstance(items, list):
+        return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures','error':'Fixtures must be a JSON array or an object with a cases array.'}, status_code=400)
     count=0
     for item in items:
+        if not isinstance(item, dict):
+            continue
         data={k:item.get(k) for k in FIELDS if k in item}; db.add(Case(**data)); count+=1
     db.commit(); return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures','result':f'Imported {count} cases'})
 @router.get('/cases/{case_id}')
 def detail(case_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
-    c=db.get(Case,case_id); calls=db.query(Call).filter_by(case_id=case_id).all(); ex=db.query(CallExtraction).filter_by(case_id=case_id).order_by(CallExtraction.created_at.desc()).first(); ar=db.query(ActionRun).filter_by(case_id=case_id).order_by(ActionRun.created_at.desc()).first()
+    c=db.get(Case,case_id)
+    if not c: raise HTTPException(status_code=404, detail='Case not found')
+    calls=db.query(Call).filter_by(case_id=case_id).all(); ex=db.query(CallExtraction).filter_by(case_id=case_id).order_by(CallExtraction.created_at.desc()).first(); ar=db.query(ActionRun).filter_by(case_id=case_id).order_by(ActionRun.created_at.desc()).first()
     return templates.TemplateResponse(request, 'case_detail.html', {'title':'Case Detail','case':c,'calls':calls,'extraction':ex,'action':ar,'statuses':STATUSES})
 @router.post('/cases/{case_id}/status')
 async def status(case_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
-    form=await request.form(); c=db.get(Case,case_id); c.status=form.get('status','pending'); db.commit(); return RedirectResponse(f'/cases/{case_id}',303)
+    form=await request.form(); c=db.get(Case,case_id)
+    if not c: raise HTTPException(status_code=404, detail='Case not found')
+    c.status=form.get('status','pending'); db.commit(); return RedirectResponse(f'/cases/{case_id}',303)

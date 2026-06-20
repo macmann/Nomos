@@ -1,1 +1,43 @@
-<!doctype html><html><head><title>{{ title or 'Nomos Clearing Voice Agent' }}</title><script src="https://unpkg.com/htmx.org@1.9.12"></script><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-slate-50 text-slate-900"><div class="flex min-h-screen"><aside class="w-64 bg-white border-r p-5"><h1 class="font-bold text-lg mb-6">Nomos Clearing</h1><nav class="space-y-2"><a class="block" href="/">Dashboard</a><a class="block" href="/cases">Cases</a><a class="block" href="/calls">Calls</a><a class="block" href="/settings">Settings</a><a class="block" href="/cases/import-fixtures">Import Fixtures</a><form method="post" action="/logout"><button>Logout</button></form></nav></aside><main class="flex-1"><div class="bg-white border-b p-4 font-semibold">{{ title or 'Nomos Clearing Voice Agent' }}</div><div class="p-6">{% block content %}{% endblock %}</div></main></div></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'Nomos Clearing Voice Agent' }}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="/" aria-label="Nomos dashboard">
+        <span class="brand-mark"><img src="https://ycnxtseuegjysdxixcpx.supabase.co/storage/v1/object/public/Public/nomos/White%20Symbol.svg" alt="Nomos logo"></span>
+        <span><strong>Nomos</strong><small>Clearing Voice Agent</small></span>
+      </a>
+      <nav class="nav-list">
+        <a href="/">Dashboard</a>
+        <a href="/cases">Cases</a>
+        <a href="/calls">Calls</a>
+        <a href="/settings">Settings</a>
+        <a href="/cases/import-fixtures">Import Fixtures</a>
+      </nav>
+      <form method="post" action="/logout" class="sidebar-footer">
+        <button class="button button-ghost" type="submit">Logout</button>
+      </form>
+    </aside>
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Operations Console</p>
+          <h1>{{ title or 'Nomos Clearing Voice Agent' }}</h1>
+        </div>
+      </header>
+      <section class="content">
+        {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+        {% if result %}<div class="alert alert-success" role="status">{{ result }}</div>{% endif %}
+        {% block content %}{% endblock %}
+      </section>
+    </main>
+  </div>
+</body>
+</html>

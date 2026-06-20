@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="empty-state">
+  <div class="empty-icon">!</div>
+  <h2>{{ heading or 'Something went wrong' }}</h2>
+  <p>{{ message or 'The request could not be completed. Please try again or review the logs.' }}</p>
+  <a class="button button-primary" href="{{ back_url or '/' }}">Return to dashboard</a>
+</section>
+{% endblock %}
