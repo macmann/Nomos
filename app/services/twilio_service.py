@@ -1,9 +1,15 @@
-import audioop
+import importlib
+import importlib.util
 import io
 import wave
 
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+
+if importlib.util.find_spec("audioop") is not None:
+    audioop = importlib.import_module("audioop")
+else:
+    from app import audioop_compat as audioop
 
 
 def convert_audio_to_twilio_mulaw_8khz(audio_bytes: bytes, input_format: str) -> bytes:
