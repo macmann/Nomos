@@ -22,7 +22,7 @@ def list_cases(request:Request, status:str='', case_type:str='', process_step:st
     if process_step: q=q.filter_by(process_step=process_step)
     if language: q=q.filter_by(preferred_language=language)
     cases=q.order_by(Case.created_at.desc()).all(); tpl='partials/case_table.html' if request.headers.get('hx-request') else 'cases.html'
-    return templates.TemplateResponse(request, tpl, {'title':'Cases','cases':cases})
+    return templates.TemplateResponse(request, tpl, {'title':'Cases','cases':cases,'statuses':STATUSES,'filters':{'status':status,'case_type':case_type,'process_step':process_step,'language':language}})
 @router.get('/cases/new')
 def new_case(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     profiles=db.query(Profile).order_by(Profile.name.asc()).all()
