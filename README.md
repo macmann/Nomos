@@ -1,4 +1,6 @@
 Demo URL: https://nomos-voice-agent.onrender.com
+Demo Usernam: admin 
+Demo Password: password
 
 # Nomos Clearing Voice Agent
 
