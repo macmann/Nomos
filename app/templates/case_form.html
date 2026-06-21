@@ -1,10 +1,42 @@
 {% extends 'base.html' %}
 {% block content %}
 <form method="post" action="/cases" class="card grid grid-2">
-  {% for n in ['external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','registration_sent_at','grid_operator_name','target_phone_number','required_outcome'] %}<label>{{ n|replace('_',' ')|title }}<input name="{{ n }}"></label>{% endfor %}
-  <label>Problem Description<textarea name="problem_description"></textarea></label>
+  <label>Scenario
+    <select name="scenario" id="scenario-select">
+      {% for key, scenario in scenarios.items() %}<option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scenario.label }}</option>{% endfor %}
+    </select>
+  </label>
+  {% for n in ['external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','registration_sent_at','grid_operator_name','target_phone_number','required_outcome'] %}<label>{{ n|replace('_',' ')|title }}<input name="{{ n }}" id="{{ n }}"></label>{% endfor %}
+  <label>Problem Description<textarea name="problem_description" id="problem_description"></textarea></label>
   <label>Language Mode<select name="language_mode"><option>fixed</option><option>auto</option></select></label>
   <label>Preferred Language<select name="preferred_language"><option>de-DE</option><option>en-US</option></select></label>
+  <div class="toolbar">
+    <button type="button" data-demo="correct_malo_id">Demo Case 1</button>
+    <button type="button" data-demo="inactive_meter">Demo Case 2</button>
+  </div>
   <button class="button-primary" type="submit">Create Case</button>
 </form>
+<script>
+const scenarios = {{ scenarios|tojson }};
+const demoCases = {
+  correct_malo_id: {scenario:'correct_malo_id', customer_name:'Max Müller', customer_address:'Musterstraße 12, 55130 Mainz-Kastel', market_location_number:'51280049120', problem_description:'MaLo does not match address'},
+  inactive_meter: {scenario:'inactive_meter', customer_name:'Anna Schneider', customer_address:'Beispielweg 7, 10115 Berlin', meter_number:'TEST-ZAEHLER-789456', problem_description:'Registration bounced because meter may be inactive'}
+};
+function setValue(id, value, overwrite=false) { const el = document.getElementById(id); if (el && (overwrite || !el.value)) el.value = value || ''; }
+function applyScenario(overwrite=false) {
+  const selected = document.getElementById('scenario-select').value;
+  const tpl = scenarios[selected];
+  setValue('case_type', tpl.case_type, overwrite);
+  setValue('problem_description', tpl.problem_description, overwrite);
+  setValue('required_outcome', tpl.required_outcome, overwrite);
+}
+document.getElementById('scenario-select').addEventListener('change', () => applyScenario(true));
+document.querySelectorAll('[data-demo]').forEach(btn => btn.addEventListener('click', () => {
+  const demo = demoCases[btn.dataset.demo];
+  document.getElementById('scenario-select').value = demo.scenario;
+  ['customer_name','customer_address','market_location_number','meter_number','problem_description'].forEach(id => setValue(id, demo[id] || '', true));
+  applyScenario(false);
+}));
+applyScenario(false);
+</script>
 {% endblock %}
