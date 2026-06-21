@@ -46,8 +46,8 @@ TWILIO_AUDIO_CHUNK_SECONDS = 0.02
 MEDIA_EVENT_SAMPLE_CHUNKS = 50
 OUTBOUND_CHUNK_EVENT_SAMPLE_CHUNKS = 50
 MIN_STT_AUDIO_BYTES = 16000
-DEFAULT_STT_FLUSH_BYTES = 24000
-DEFAULT_STT_FLUSH_SECONDS = 3.0
+DEFAULT_STT_FLUSH_BYTES = 32000
+DEFAULT_STT_FLUSH_SECONDS = 4.0
 DEFAULT_STT_AFTER_BOT_COOLDOWN_MS = 500
 DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX = 1000
 DEFAULT_BOT_SPEAKING_MAX_SECONDS = 10
@@ -126,13 +126,13 @@ def _settings_snapshot() -> dict[str, Any]:
             "outbound_audio_queue_max": max(_int_setting(ss.get("outbound_audio_queue_max", str(DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX)), DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX), DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX),
             "bot_speaking_max_seconds": _float_setting(ss.get("bot_speaking_max_seconds", str(DEFAULT_BOT_SPEAKING_MAX_SECONDS)), DEFAULT_BOT_SPEAKING_MAX_SECONDS),
             "barge_in_enabled": _bool_setting(ss.get("barge_in_enabled", "false"), False),
-            "utterance_silence_ms": _int_setting(ss.get("utterance_silence_ms", "1200"), 1200),
+            "utterance_silence_ms": _int_setting(ss.get("utterance_silence_ms", "2200"), 2200),
             "min_meaningful_words": _int_setting(ss.get("min_meaningful_words", "3"), 3),
             "allow_partial_number_prompt": _bool_setting(ss.get("allow_partial_number_prompt", "true"), True),
         }
     except Exception:
         logger.exception("NOMOS_WS_ERROR failed_to_load_settings")
-        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False, "utterance_silence_ms": 1200, "min_meaningful_words": 3, "allow_partial_number_prompt": True}
+        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False, "utterance_silence_ms": 2200, "min_meaningful_words": 3, "allow_partial_number_prompt": True}
     finally:
         db.close()
 
