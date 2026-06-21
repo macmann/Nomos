@@ -64,6 +64,26 @@ class Call(Base, TimestampMixin):
     case = relationship("Case", back_populates="calls")
     transcripts = relationship("CallTranscript", back_populates="call")
     events = relationship("CallEvent", back_populates="call")
+    state = relationship("CallState", back_populates="call", uselist=False)
+
+class CallState(Base):
+    __tablename__ = "call_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"), unique=True, index=True)
+    phase: Mapped[str] = mapped_column(String(60), default="opening", index=True)
+    language: Mapped[str | None] = mapped_column(String(10))
+    known_operator_name: Mapped[str | None] = mapped_column(String(255))
+    known_market_location_number: Mapped[str | None] = mapped_column(String(120))
+    corrected_market_location_number: Mapped[str | None] = mapped_column(String(120))
+    partial_malo_digits: Mapped[str | None] = mapped_column(String(120))
+    meter_status: Mapped[str | None] = mapped_column(String(120))
+    reference_number: Mapped[str | None] = mapped_column(String(120))
+    next_action: Mapped[str | None] = mapped_column(String(120))
+    last_agent_question: Mapped[str | None] = mapped_column(Text)
+    waiting_for_field: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    call = relationship("Call", back_populates="state")
 
 class CallTranscript(Base, TimestampMixin):
     __tablename__ = "call_transcripts"
@@ -74,6 +94,7 @@ class CallTranscript(Base, TimestampMixin):
     language: Mapped[str | None] = mapped_column(String(10))
     confidence: Mapped[float | None] = mapped_column(Float)
     timestamp_ms: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str | None] = mapped_column(String(30), default="stt")
     call = relationship("Call", back_populates="transcripts")
 
 class CallEvent(Base, TimestampMixin):

@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import get_settings
 from app.database import SessionLocal
+from app.agents.clearing_agent import normalize_spoken_digits
 from app.models import Call, CallEvent, CallTranscript
 from app.services.elevenlabs_service import ElevenLabsService
 from app.services.language_service import detect_language, dtmf_for_ivr, is_ivr
@@ -125,10 +126,13 @@ def _settings_snapshot() -> dict[str, Any]:
             "outbound_audio_queue_max": max(_int_setting(ss.get("outbound_audio_queue_max", str(DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX)), DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX), DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX),
             "bot_speaking_max_seconds": _float_setting(ss.get("bot_speaking_max_seconds", str(DEFAULT_BOT_SPEAKING_MAX_SECONDS)), DEFAULT_BOT_SPEAKING_MAX_SECONDS),
             "barge_in_enabled": _bool_setting(ss.get("barge_in_enabled", "false"), False),
+            "utterance_silence_ms": _int_setting(ss.get("utterance_silence_ms", "1200"), 1200),
+            "min_meaningful_words": _int_setting(ss.get("min_meaningful_words", "3"), 3),
+            "allow_partial_number_prompt": _bool_setting(ss.get("allow_partial_number_prompt", "true"), True),
         }
     except Exception:
         logger.exception("NOMOS_WS_ERROR failed_to_load_settings")
-        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False}
+        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False, "utterance_silence_ms": 1200, "min_meaningful_words": 3, "allow_partial_number_prompt": True}
     finally:
         db.close()
 
@@ -159,6 +163,27 @@ def is_valid_user_transcript(text: str | None) -> bool:
         return False
     return True
 
+
+def _word_count(text: str | None) -> int:
+    return len([w for w in (text or "").replace("-", " ").split() if w.strip()])
+
+def _should_call_agent(text: str | None, settings: dict[str, Any]) -> tuple[bool, str]:
+    t = (text or "").strip()
+    low = t.lower().strip(" .,!?")
+    digits = normalize_spoken_digits(t)
+    if not t:
+        return False, "empty"
+    if t.endswith("-"):
+        return False, "trailing_fragment_marker"
+    if low in {"mm", "uh", "um", "äh", "ähm", "wait"}:
+        return False, "short_filler"
+    if 1 <= len(digits) < 2:
+        return False, "very_short_digit_fragment"
+    if 2 <= len(digits) < 11 and settings.get("allow_partial_number_prompt"):
+        return True, "partial_number_prompt"
+    if _word_count(t) < settings.get("min_meaningful_words", 3) and len(digits) < 11:
+        return False, "too_few_meaningful_words"
+    return True, "complete_enough"
 
 def _is_invalid_transcript(text: str | None) -> bool:
     return not is_valid_user_transcript(text)
@@ -323,6 +348,10 @@ async def send_test_greeting(call_id: int) -> bool:
     session = ACTIVE_TWILIO_SESSIONS.get(call_id)
     if not session or not session.get("stream_sid"):
         return False
+    try:
+        db = SessionLocal(); db.add(CallTranscript(call_id=call_id, speaker="agent", text=GREETING, language="de-DE", source="greeting")); db.commit(); db.close()
+    except Exception:
+        logger.exception("NOMOS_WS_ERROR failed_to_persist_greeting call_id=%s", call_id)
     asyncio.create_task(_speak_text(call_id, GREETING, "de-DE", session["outbound_audio_queue"], source="greeting", stats=session.get("voice_stats"), bot_is_speaking=session.get("bot_is_speaking"), cooldown_until_ref=session.get("stt_cooldown_until", {"until": 0.0})))
     return True
 
@@ -374,11 +403,14 @@ async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, qu
                         logger.warning("NOMOS_AGENT_SKIPPED_INVALID_TRANSCRIPT call_id=%s", call_id)
                         _write_event(call_id, "stt_invalid_transcript", {"text": transcript_text or ""})
                         return
+                    pending = ACTIVE_TWILIO_SESSIONS.get(call_id, {}).get("pending_operator_utterance") or ""
+                    combined_transcript = " ".join(part for part in [pending, transcript_text] if part).strip()
                     if call:
-                        language = detect_language(transcript_text) if call.case.language_mode == "auto" else call.active_language or call.case.preferred_language
+                        language = detect_language(combined_transcript) if call.case.language_mode == "auto" else call.active_language or call.case.preferred_language
                         call.active_language = language
+                        transcript_text = combined_transcript
                         speaker = "ivr" if is_ivr(transcript_text) else "operator"
-                        db.add(CallTranscript(call_id=call_id, speaker=speaker, text=transcript_text, language=language, confidence=0.8))
+                        db.add(CallTranscript(call_id=call_id, speaker=speaker, text=transcript_text, language=language, confidence=0.8, source="stt"))
                         db.commit()
                 finally:
                     db.close()
@@ -390,6 +422,17 @@ async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, qu
             if digit and stream_sid:
                 logger.warning("NOMOS_DTMF_SKIPPED_BACKGROUND_SEND digit=%s", digit)
                 return
+            should_call, completeness_reason = _should_call_agent(transcript_text, settings)
+            if not should_call:
+                session = ACTIVE_TWILIO_SESSIONS.get(call_id)
+                if session is not None:
+                    session["pending_operator_utterance"] = transcript_text
+                logger.warning("NOMOS_AGENT_SKIPPED_INCOMPLETE_UTTERANCE call_id=%s reason=%s", call_id, completeness_reason)
+                _write_event(call_id, "agent_skipped_incomplete_utterance", {"text": transcript_text, "reason": completeness_reason, "pending": True})
+                return
+            session = ACTIVE_TWILIO_SESSIONS.get(call_id)
+            if session is not None:
+                session["pending_operator_utterance"] = ""
             if not settings["agent_enabled"]:
                 return
             logger.warning("NOMOS_AGENT_START")
@@ -401,9 +444,10 @@ async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, qu
                     call = db.get(Call, call_id)
                     if call:
                         ss = SettingsService(db, get_settings().app_encryption_key)
-                        response = await OpenAIAgentService(ss).respond(call.case, transcript_text, language or call.active_language or "de-DE")
+                        agent_result = await OpenAIAgentService(ss).respond(db, call, transcript_text, language or call.active_language or "de-DE")
+                        response = agent_result.get("spoken_reply") if agent_result.get("should_speak", True) else ""
                         response = _shorten_response(response or "", settings["max_spoken_response_chars"])
-                        db.add(CallTranscript(call_id=call_id, speaker="agent", text=response, language=language or call.active_language))
+                        db.add(CallTranscript(call_id=call_id, speaker="agent", text=response, language=language or call.active_language, source="agent"))
                         db.commit()
                 finally:
                     db.close()
@@ -427,7 +471,7 @@ async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, qu
                 stats["tts_responses_queued"] = stats.get("tts_responses_queued", 0) + 1
                 logger.warning("NOMOS_AGENT_TTS_QUEUED text_len=%s", len(response))
                 _write_event(call_id, "agent_tts_queued", {"text_len": len(response)})
-                await _speak_text(call_id, response, language or "de-DE", queue, source="agent", stats=stats)
+                await _speak_text(call_id, response, language or "de-DE", queue, source="agent", stats=stats, bot_is_speaking=ACTIVE_TWILIO_SESSIONS.get(call_id, {}).get("bot_is_speaking"), cooldown_until_ref=ACTIVE_TWILIO_SESSIONS.get(call_id, {}).get("stt_cooldown_until", {"until": 0.0}), cooldown_ms=settings["stt_after_bot_cooldown_ms"])
     except Exception:
         logger.exception("NOMOS_PROCESS_TASK_ERROR call_id=%s", call_id)
     finally:
@@ -470,7 +514,7 @@ async def media(ws: WebSocket, call_id: int):
     outbound_audio_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=settings["outbound_audio_queue_max"])
     sender_task = asyncio.create_task(twilio_audio_sender(ws, stream_sid_ref, outbound_audio_queue, stop_event, call_id, bot_is_speaking, stt_cooldown_until, voice_stats, settings["stt_after_bot_cooldown_ms"]))
     watchdog_task = asyncio.create_task(bot_speaking_watchdog(call_id, bot_is_speaking, stop_event, voice_stats, settings["bot_speaking_max_seconds"]))
-    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None, "outbound_audio_queue": outbound_audio_queue, "bot_is_speaking": bot_is_speaking, "voice_stats": voice_stats, "stt_cooldown_until": stt_cooldown_until}
+    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None, "outbound_audio_queue": outbound_audio_queue, "bot_is_speaking": bot_is_speaking, "voice_stats": voice_stats, "stt_cooldown_until": stt_cooldown_until, "pending_operator_utterance": ""}
     logger.warning("NOMOS_WS_CONNECTED call_id=%s", call_id)
     logger.warning("NOMOS_RECEIVE_LOOP_STARTED call_id=%s", call_id)
     _write_event(call_id, "websocket_connected", {"voice_safe_mode": settings["voice_safe_mode"]})
