@@ -227,9 +227,9 @@ class OpenAIAgentService:
     def _directive(self, call, state, transcript: str, intent: dict[str, Any], extra_instruction: str | None = None) -> dict[str, Any]:
         directive_type, phase, missing, facts = self._next_step(call, state, intent)
         examples = [
-            {"operator": "What are you talking about?", "good_agent": "Sorry, let me clarify. I’m calling about the registration for Musterstraße 12 in Mainz-Kastel. We need to confirm the correct market location number for that address."},
-            {"operator": "I already told you. It is in progress.", "good_agent": "You're right, thank you. I have the status as in progress. I’m only missing the corrected market location number."},
-            {"operator": "You're fired.", "good_agent": "I’m sorry, I know this is annoying. Let me keep it simple: I have the status as in progress, and I just need the corrected market location number."},
+            {"operator": "What are you talking about?", "good_agent": "Sorry, let me clarify. Is that meter still active, or was it only temporary?"},
+            {"operator": "I already told you. It is in progress.", "good_agent": "You're right, thanks. I only need the corrected number."},
+            {"operator": "You're fired.", "good_agent": "Sorry, I’ll keep it short. What corrected number should Nomos use?"},
             {"operator": "Five one two.", "good_agent": "Got it, I have five one two so far. Please continue."},
             {"operator": "Eight zero zero four nine one two three.", "good_agent": "Thank you. I have five one two eight zero zero four nine one two three. Is that correct?"},
             {"operator": "Yes, correct. Resend it.", "good_agent": "Understood. I’ve noted the corrected number and that Nomos should resend the registration. Thank you for your help."},
@@ -263,8 +263,8 @@ class OpenAIAgentService:
         if "asks_to_wait" in intents: return {"spoken_reply": "Of course, I’ll wait.", "phase": state.phase, "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "operator asked to wait"}
         if intents & {"asks_clarification", "asks_human_like_clarification"}:
             if scenario == "inactive_meter":
-                return {"spoken_reply": f"Sorry, let me clarify. I’m calling about the registration for {call.case.customer_address}. Can you confirm whether meter {call.case.meter_number or 'the meter'} is active, removed, or was temporary?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
-            return {"spoken_reply": f"Sorry, let me clarify. I’m calling about the registration for {call.case.customer_address}. Can you see the correct market location number for that address?", "phase": "collecting_malo_number", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
+                return {"spoken_reply": f"Sorry, let me clarify. Is that meter still active, or was it only temporary?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
+            return {"spoken_reply": f"Sorry, let me clarify. What corrected number should Nomos use?", "phase": "collecting_malo_number", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
         prefix = "I’m sorry, you’re right. " if "expresses_frustration" in intents else ""
         if scenario == "inactive_meter":
             if intent.get("field") == "meter_status" and intent.get("value"):
