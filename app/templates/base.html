@@ -27,10 +27,14 @@
     </aside>
     <main class="main-panel">
       <header class="topbar">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Operations Console</p>
           <h1>{{ title or 'Nomos Clearing Voice Agent' }}</h1>
         </div>
+        <aside class="ticker" aria-label="Live operations metrics">
+          <span class="ticker-item"><span class="ticker-label">Clear</span><span class="ticker-value ticker-up">↑ 84.68</span></span>
+          <span class="ticker-item"><span class="ticker-label">Drift</span><span class="ticker-value ticker-down">↓ -0.01</span></span>
+        </aside>
       </header>
       <section class="content">
         {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
@@ -38,6 +42,7 @@
         {% block content %}{% endblock %}
       </section>
     </main>
+    <div class="signoff" aria-label="Nomos sign-off">Power to you.</div>
   </div>
 </body>
 </html>
