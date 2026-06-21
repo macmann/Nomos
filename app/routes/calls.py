@@ -10,7 +10,7 @@ from app.models import ActionRun, Call, CallEvent, CallExtraction, CallTranscrip
 from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
-from app.routes.websocket import send_test_greeting
+from app.routes.websocket import ACTIVE_TWILIO_SESSIONS, is_valid_user_transcript, send_test_greeting
 from app.settings_service import SettingsService
 
 def _bool_setting(value, default=False):
@@ -27,6 +27,11 @@ def _voice_debug_summary(db, call_id):
     last_media = media_events[-1].event_payload.get('timestamp') if media_events and media_events[-1].event_payload else None
     last_error = next((e for e in reversed(events) if e.event_type in {'error','websocket_error'}), None)
     ss = SettingsService(db, get_settings().app_encryption_key)
+    session = ACTIVE_TWILIO_SESSIONS.get(call_id) or {}
+    stats = session.get('voice_stats') or {}
+    last_valid_stt = next((e for e in reversed(events) if e.event_type == 'stt_completed' and is_valid_user_transcript((e.event_payload or {}).get('text'))), None)
+    last_invalid_stt = next((e for e in reversed(events) if e.event_type == 'stt_invalid_transcript'), None)
+    last_agent_response = next((e for e in reversed(events) if e.event_type == 'agent_completed'), None)
     return {
         'websocket_connected': any(e.event_type == 'websocket_connected' for e in events),
         'twilio_start': any(e.event_type == 'twilio_start_received' for e in events),
@@ -34,6 +39,12 @@ def _voice_debug_summary(db, call_id):
         'last_media_timestamp': last_media,
         'last_error': last_error,
         'voice_safe_mode': _bool_setting(ss.get('voice_safe_mode', 'true'), True),
+        'last_valid_stt_transcript': (last_valid_stt.event_payload or {}).get('text') if last_valid_stt else None,
+        'last_invalid_stt_transcript': (last_invalid_stt.event_payload or {}).get('text') if last_invalid_stt else None,
+        'last_agent_response': (last_agent_response.event_payload or {}).get('text') if last_agent_response else None,
+        'bot_is_speaking': bool(session.get('bot_is_speaking') and session['bot_is_speaking'].is_set()),
+        'agent_responses_queued_to_tts': stats.get('tts_responses_queued', len([e for e in events if e.event_type == 'agent_tts_queued'])),
+        'tts_chunks_sent': stats.get('tts_chunks_sent', 0),
     }
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
