@@ -1,0 +1,29 @@
+<div id="live-transcript" class="live-transcript" hx-get="/calls/{{ call.id }}/transcript" hx-trigger="load, every 2s" hx-swap="outerHTML">
+  <div class="live-transcript-header">
+    <div>
+      <p class="eyebrow live-eyebrow">Live transcript</p>
+      <h3>Transcript stream</h3>
+    </div>
+    <span class="live-indicator"><span aria-hidden="true"></span>Updating live</span>
+  </div>
+  <div class="transcript-feed" aria-live="polite" aria-label="Live call transcript">
+    {% for t in transcripts %}
+      <article class="transcript-message transcript-message-{{ t.speaker|lower|replace(' ', '-') }}">
+        <div class="transcript-avatar">{{ (t.speaker or '?')[:1]|upper }}</div>
+        <div class="transcript-bubble">
+          <div class="transcript-meta">
+            <strong>{{ t.speaker }}</strong>
+            <span>{{ t.language or '—' }}</span>
+            {% if t.timestamp_ms is not none %}<span>{{ '%.1f'|format(t.timestamp_ms / 1000) }}s</span>{% endif %}
+          </div>
+          <p>{{ t.text }}</p>
+        </div>
+      </article>
+    {% else %}
+      <div class="transcript-empty">
+        <div class="transcript-empty-dot" aria-hidden="true"></div>
+        <p>No transcript available yet. New speech will appear here automatically while the call is active.</p>
+      </div>
+    {% endfor %}
+  </div>
+</div>
