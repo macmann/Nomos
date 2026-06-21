@@ -24,6 +24,7 @@ INVALID_TRANSCRIPTS = {"(screeching noise)", "[noise]", "(noise)", "[silence]", 
 TWILIO_AUDIO_CHUNK_BYTES = 160
 TWILIO_AUDIO_CHUNK_SECONDS = 0.02
 MEDIA_EVENT_SAMPLE_CHUNKS = 50
+MIN_STT_AUDIO_BYTES = 8000
 
 
 def _bool_setting(value: Any, default: bool = False) -> bool:
@@ -94,12 +95,13 @@ def _settings_snapshot() -> dict[str, Any]:
             "max_spoken_response_chars": _int_setting(ss.get("max_spoken_response_chars", "220"), 220),
             "stt_flush_bytes": _int_setting(ss.get("stt_flush_bytes", "12000"), 12000),
             "stt_flush_seconds": _float_setting(ss.get("stt_flush_seconds", "2.0"), 2.0),
+            "stt_min_audio_bytes": _int_setting(ss.get("stt_min_audio_bytes", str(MIN_STT_AUDIO_BYTES)), MIN_STT_AUDIO_BYTES),
             "outbound_audio_queue_max": _int_setting(ss.get("outbound_audio_queue_max", "200"), 200),
             "barge_in_enabled": _bool_setting(ss.get("barge_in_enabled", "false"), False),
         }
     except Exception:
         logger.exception("NOMOS_WS_ERROR failed_to_load_settings")
-        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": 12000, "stt_flush_seconds": 2.0, "outbound_audio_queue_max": 200, "barge_in_enabled": False}
+        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": 12000, "stt_flush_seconds": 2.0, "stt_min_audio_bytes": MIN_STT_AUDIO_BYTES, "outbound_audio_queue_max": 200, "barge_in_enabled": False}
     finally:
         db.close()
 
@@ -228,6 +230,11 @@ async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, qu
             if settings["voice_safe_mode"] or not settings["stt_enabled"]:
                 logger.warning("NOMOS_STT_DISABLED call_id=%s voice_safe_mode=%s stt_enabled=%s", call_id, settings["voice_safe_mode"], settings["stt_enabled"])
                 return
+            min_audio_bytes = settings.get("stt_min_audio_bytes", MIN_STT_AUDIO_BYTES)
+            if len(audio) < min_audio_bytes:
+                logger.warning("NOMOS_STT_SKIPPED_SHORT_AUDIO call_id=%s bytes=%s min_bytes=%s", call_id, len(audio), min_audio_bytes)
+                _write_event(call_id, "stt_skipped_short_audio", {"bytes": len(audio), "min_bytes": min_audio_bytes})
+                return
             logger.warning("NOMOS_STT_START bytes=%s", len(audio))
             _write_event(call_id, "stt_started", {"bytes": len(audio)})
             transcript_text = None
@@ -330,7 +337,8 @@ async def media(ws: WebSocket, call_id: int):
                 _write_event(call_id, "websocket_error", {"stage": "json_parse", "raw": _safe_raw(raw)})
                 continue
             event = msg.get("event")
-            logger.warning("NOMOS_WS_RAW event=%s", event)
+            if event != "media":
+                logger.warning("NOMOS_WS_RAW event=%s", event)
             try:
                 if event == "connected":
                     _write_event(call_id, "twilio_connected_received", {})
@@ -368,7 +376,10 @@ async def media(ws: WebSocket, call_id: int):
                     if should_sample_media:
                         logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
                     if len(buffer) >= settings["stt_flush_bytes"] or (buffer and time.time() - last_flush >= settings["stt_flush_seconds"]):
-                        if processing_lock.locked():
+                        if len(buffer) < settings.get("stt_min_audio_bytes", MIN_STT_AUDIO_BYTES):
+                            if should_sample_media:
+                                logger.warning("NOMOS_STT_FLUSH_DEFERRED_SHORT_AUDIO bytes=%s min_bytes=%s", len(buffer), settings.get("stt_min_audio_bytes", MIN_STT_AUDIO_BYTES))
+                        elif processing_lock.locked():
                             logger.warning("NOMOS_STT_FLUSH_SKIPPED_PROCESSING_BUSY bytes=%s", len(buffer))
                         else:
                             flushed = bytes(buffer)

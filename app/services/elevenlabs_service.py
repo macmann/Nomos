@@ -7,6 +7,21 @@ from app.services.twilio_service import convert_audio_to_twilio_mulaw_8khz, conv
 logger = logging.getLogger(__name__)
 
 
+def _normalize_stt_language(language_code: str | None) -> str | None:
+    if not language_code:
+        return None
+    code = str(language_code).strip().lower().replace("_", "-")
+    if not code:
+        return None
+    base = code.split("-", 1)[0]
+    return base if base in {"en", "de", "fr", "es", "it", "pt", "pl", "hi"} else None
+
+
+def _safe_response_text(response: httpx.Response, limit: int = 500) -> str:
+    text = response.text or ""
+    return text[:limit] + ("...[truncated]" if len(text) > limit else "")
+
+
 class ElevenLabsService:
     def __init__(self, settings): self.settings=settings
 
@@ -65,14 +80,24 @@ class ElevenLabsService:
         wav = convert_twilio_mulaw_to_wav_pcm16_16khz(audio)
         logger.warning('NOMOS_STT_CONVERT output_wav_bytes=%s', len(wav or b''))
         model = self.settings.get('elevenlabs_stt_model','scribe_v1')
+        normalized_language = _normalize_stt_language(language_code)
+        if language_code and not normalized_language:
+            logger.warning('NOMOS_STT_LANGUAGE_OMITTED unsupported_language=%s', language_code)
         async with httpx.AsyncClient(timeout=30) as c:
             files={'file': ('audio.wav', wav, 'audio/wav')}
             data={'model_id': model}
-            if language_code:
-                data['language_code'] = language_code
+            if normalized_language:
+                data['language_code'] = normalized_language
             r=await c.post('https://api.elevenlabs.io/v1/speech-to-text', headers={'xi-api-key':key}, data=data, files=files)
-            logger.warning('NOMOS_ELEVENLABS_STT_STATUS status=%s bytes=%s', r.status_code, len(r.content or b''))
-            r.raise_for_status()
+            logger.warning('NOMOS_ELEVENLABS_STT_STATUS status=%s bytes=%s language=%s', r.status_code, len(r.content or b''), normalized_language or 'auto')
+            if r.status_code == 400 and normalized_language:
+                logger.warning('NOMOS_ELEVENLABS_STT_RETRY_WITHOUT_LANGUAGE status=400 body=%s', _safe_response_text(r))
+                files={'file': ('audio.wav', wav, 'audio/wav')}
+                r=await c.post('https://api.elevenlabs.io/v1/speech-to-text', headers={'xi-api-key':key}, data={'model_id': model}, files=files)
+                logger.warning('NOMOS_ELEVENLABS_STT_STATUS status=%s bytes=%s language=auto retry=true', r.status_code, len(r.content or b''))
+            if r.status_code >= 400:
+                logger.warning('NOMOS_ELEVENLABS_STT_ERROR status=%s body=%s', r.status_code, _safe_response_text(r))
+                return None
             data=r.json()
             return (data.get('text') or '').strip()
 
