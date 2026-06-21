@@ -156,3 +156,16 @@ body:before{right:-120px}
 .settings-tab-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
 .settings-tab-label{width:100%}
 }
+
+
+.call-detail-tabs{display:grid;gap:22px;overflow:hidden}
+.call-detail-tab-input{position:absolute;opacity:0;pointer-events:none}
+.call-detail-tab-list{display:flex;flex-wrap:wrap;gap:8px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.call-detail-tab-label{display:inline-flex;align-items:center;justify-content:center;border:1px solid #c7c7c7;border-radius:999px;background:rgba(255,255,255,.45);color:var(--muted);padding:10px 15px;font-size:.76rem;font-weight:850;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;transition:background .15s ease,color .15s ease,border-color .15s ease}
+.call-detail-tab-label:hover{background:#000;border-color:#000;color:#fff}
+.call-detail-tab-panels{display:grid}
+.call-detail-tab-panel{display:none}
+.call-detail-tabs:has(#call-detail-tab-normal:checked) .call-detail-tab-label[for="call-detail-tab-normal"],
+.call-detail-tabs:has(#call-detail-tab-advanced:checked) .call-detail-tab-label[for="call-detail-tab-advanced"]{background:#000;border-color:#000;color:#fff}
+.call-detail-tabs:has(#call-detail-tab-normal:checked) .call-detail-tab-panel:nth-child(1),
+.call-detail-tabs:has(#call-detail-tab-advanced:checked) .call-detail-tab-panel:nth-child(2){display:block}
