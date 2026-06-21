@@ -43,6 +43,7 @@ MEANINGFUL_SHORT_TRANSCRIPTS = {"ja", "yes", "no", "ok", "nein"}
 TWILIO_AUDIO_CHUNK_BYTES = 160
 TWILIO_AUDIO_CHUNK_SECONDS = 0.02
 MEDIA_EVENT_SAMPLE_CHUNKS = 50
+OUTBOUND_CHUNK_EVENT_SAMPLE_CHUNKS = 50
 MIN_STT_AUDIO_BYTES = 16000
 DEFAULT_STT_FLUSH_BYTES = 24000
 DEFAULT_STT_FLUSH_SECONDS = 3.0
@@ -260,6 +261,7 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                 chunks = [audio[i:i + TWILIO_AUDIO_CHUNK_BYTES] for i in range(0, len(audio), TWILIO_AUDIO_CHUNK_BYTES) if audio[i:i + TWILIO_AUDIO_CHUNK_BYTES]]
                 if not chunks:
                     continue
+                response_chunk_total = len(chunks)
                 bot_is_speaking.set()
                 started_sending = True
                 now = datetime.utcnow().isoformat()
@@ -268,7 +270,7 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                 logger.warning("NOMOS_BOT_SPEAKING_START call_id=%s source=%s chunks=%s", call_id, response.get("source"), len(chunks))
                 _write_event(call_id, "bot_speaking_start", {"source": response.get("source"), "chunks": len(chunks), "started_at": now})
                 next_send_at = time.monotonic()
-                for chunk in chunks:
+                for response_chunk_index, chunk in enumerate(chunks, start=1):
                     if stop_event.is_set():
                         reason = "disconnect"
                         break
@@ -283,9 +285,23 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                         break
                     chunk_index += 1
                     stats["tts_chunks_sent"] = stats.get("tts_chunks_sent", 0) + 1
-                    _write_event(call_id, "twilio_audio_chunk_sent", {"chunk_index": chunk_index, "source": response.get("source")})
-                    if chunk_index == 1 or chunk_index % MEDIA_EVENT_SAMPLE_CHUNKS == 0:
-                        logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s", chunk_index)
+                    should_sample_chunk = (
+                        response_chunk_index == 1
+                        or response_chunk_index == response_chunk_total
+                        or response_chunk_index % OUTBOUND_CHUNK_EVENT_SAMPLE_CHUNKS == 0
+                    )
+                    if should_sample_chunk:
+                        _write_event(
+                            call_id,
+                            "twilio_audio_chunk_sent",
+                            {
+                                "chunk_index": chunk_index,
+                                "response_chunk_index": response_chunk_index,
+                                "response_chunks": response_chunk_total,
+                                "source": response.get("source"),
+                            },
+                        )
+                        logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s response_chunk_index=%s/%s", chunk_index, response_chunk_index, response_chunk_total)
                     next_send_at = time.monotonic() + TWILIO_AUDIO_CHUNK_SECONDS
                 await safe_send_json(ws, {"event": "mark", "streamSid": stream_sid_ref.get("stream_sid"), "mark": {"name": f"nomos-tts-complete-{stats.get('tts_responses_queued', 0)}"}})
             except Exception:

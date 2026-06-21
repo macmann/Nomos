@@ -56,7 +56,7 @@ class ElevenLabsService:
         params={'output_format': output_format}
         body={'text': text, 'model_id': model_id}
         async with httpx.AsyncClient(timeout=30) as c:
-            r=await c.post(url, params=params, json=body, headers={'xi-api-key':key, 'Accept':'audio/mpeg'})
+            r=await c.post(url, params=params, json=body, headers={'xi-api-key':key})
             logger.warning('NOMOS_ELEVENLABS_TTS_STATUS status=%s bytes=%s format=%s', r.status_code, len(r.content or b''), output_format)
             if r.status_code >= 400 and output_format == 'ulaw_8000':
                 fallback='pcm_16000'
