@@ -1,28 +1,68 @@
 {% extends 'base.html' %}
 {% block content %}
-<form method="post" action="/cases" class="card grid grid-2">
-  <label>Profile
-    <select name="profile_id" id="profile-select">
-      <option value="">No profile / manual entry</option>
-      {% for profile in profiles %}<option value="{{ profile.id }}" {% if request.query_params.get('profile_id') == profile.id|string %}selected{% endif %}>{{ profile.name }}{% if profile.customer_name %} — {{ profile.customer_name }}{% endif %}</option>{% endfor %}
-    </select>
-    <small class="muted">Reuse saved CRM data for customer, meter, grid provider, phone, and language.</small>
-  </label>
-  <label>Scenario
-    <select name="scenario" id="scenario-select">
-      {% for key, scenario in scenarios.items() %}<option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scenario.label }}</option>{% endfor %}
-    </select>
-  </label>
-  {% for n in ['external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','registration_sent_at','grid_operator_name','target_phone_number','required_outcome'] %}<label>{{ n|replace('_',' ')|title }}<input name="{{ n }}" id="{{ n }}"></label>{% endfor %}
-  <label class="grid-span-2">Issue Description<textarea name="problem_description" id="problem_description" placeholder="Describe only the new issue/status update needed for this case."></textarea></label>
-  <label>Language Mode<select name="language_mode"><option>fixed</option><option>auto</option></select></label>
-  <label>Preferred Language<select name="preferred_language"><option>de-DE</option><option>en-US</option></select></label>
-  <div class="toolbar">
-    <button type="button" data-demo="correct_malo_id">Demo Case 1</button>
-    <button type="button" data-demo="meter_status_clarification">Demo Case 2</button>
+<form method="post" action="/cases" class="case-form stack">
+  <section class="form-section form-section-hero">
+    <div>
+      <p class="section-kicker">New clearing case</p>
+      <h2>Capture the essentials before routing or calling.</h2>
+      <p class="muted">Start with a saved profile or scenario, then refine the customer, meter, and desired outcome details.</p>
+    </div>
+    <div class="toolbar form-actions-top">
+      <button type="button" data-demo="correct_malo_id">Demo Case 1</button>
+      <button type="button" data-demo="meter_status_clarification">Demo Case 2</button>
+    </div>
+  </section>
+
+  <section class="card form-section">
+    <div class="form-section-header">
+      <p class="section-kicker">Setup</p>
+      <h3>Profile and scenario</h3>
+    </div>
+    <div class="grid grid-2">
+      <label>Profile
+        <select name="profile_id" id="profile-select">
+          <option value="">No profile / manual entry</option>
+          {% for profile in profiles %}<option value="{{ profile.id }}" {% if request.query_params.get('profile_id') == profile.id|string %}selected{% endif %}>{{ profile.name }}{% if profile.customer_name %} — {{ profile.customer_name }}{% endif %}</option>{% endfor %}
+        </select>
+        <small class="muted">Reuse saved CRM data for customer, meter, grid provider, phone, and language.</small>
+      </label>
+      <label>Scenario
+        <select name="scenario" id="scenario-select">
+          {% for key, scenario in scenarios.items() %}<option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scenario.label }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="card form-section">
+    <div class="form-section-header"><p class="section-kicker">Case details</p><h3>Reference and process</h3></div>
+    <div class="grid grid-3">
+      {% for n in ['external_case_id','case_type','process_step','registration_sent_at'] %}<label>{{ n|replace('_',' ')|title }}<input name="{{ n }}" id="{{ n }}" {% if n == 'registration_sent_at' %}type="date"{% endif %}></label>{% endfor %}
+    </div>
+  </section>
+
+  <section class="card form-section">
+    <div class="form-section-header"><p class="section-kicker">Customer and market data</p><h3>Contact, meter, and operator</h3></div>
+    <div class="grid grid-2">
+      {% for n in ['customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number'] %}<label class="{% if n == 'customer_address' %}grid-span-2{% endif %}">{{ n|replace('_',' ')|title }}<input name="{{ n }}" id="{{ n }}"></label>{% endfor %}
+    </div>
+  </section>
+
+  <section class="card form-section">
+    <div class="form-section-header"><p class="section-kicker">Resolution brief</p><h3>Issue and required outcome</h3></div>
+    <div class="grid grid-2">
+      <label>Issue Description<textarea name="problem_description" id="problem_description" placeholder="Describe only the new issue/status update needed for this case."></textarea></label>
+      <label>Required Outcome<textarea name="required_outcome" id="required_outcome" placeholder="Describe what the agent must confirm or resolve."></textarea></label>
+      <label>Language Mode<select name="language_mode"><option>fixed</option><option>auto</option></select></label>
+      <label>Preferred Language<select name="preferred_language"><option>de-DE</option><option>en-US</option></select></label>
+    </div>
+  </section>
+
+  <div class="form-submit-bar">
+    <a class="button" href="/cases">Cancel</a>
+    <button class="button-primary" type="submit">Create Case</button>
+    <button class="button-secondary" type="submit" name="start_call" value="1">Create Case & Start Call</button>
   </div>
-  <button class="button-primary" type="submit">Create Case</button>
-  <button class="button-secondary" type="submit" name="start_call" value="1">Create Case & Start Call</button>
 </form>
 <script>
 const scenarios = {{ scenarios|tojson }};

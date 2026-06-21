@@ -1,12 +1,44 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="toolbar"><a class="button button-primary" href="/cases/new">Create Case</a><a class="button button-secondary" href="/cases/import-fixtures">Import Fixtures JSON</a></div>
-<form class="filter-form" hx-get="/cases" hx-target="#case-table" hx-indicator="#case-loading">
-  <input name="status" placeholder="Status">
-  <input name="case_type" placeholder="Case type">
-  <input name="process_step" placeholder="Process step">
-  <input name="language" placeholder="Language">
-  <button type="submit">Filter</button><span id="case-loading" class="muted htmx-indicator">Loading…</span>
-</form>
-<div id="case-table">{% include 'partials/case_table.html' %}</div>
+<section class="cases-page stack">
+  <div class="page-actions">
+    <div>
+      <p class="section-kicker">Case management</p>
+      <h2>Review, filter, and launch clearing cases.</h2>
+    </div>
+    <div class="toolbar page-actions-buttons">
+      <a class="button button-primary" href="/cases/new">Create Case</a>
+      <a class="button button-secondary" href="/cases/import-fixtures">Import Fixtures JSON</a>
+    </div>
+  </div>
+
+  <form class="filter-bar" hx-get="/cases" hx-target="#case-table" hx-indicator="#case-loading">
+    <label>Status
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for item in statuses %}<option value="{{ item }}" {% if filters.status == item %}selected{% endif %}>{{ item|replace('_',' ')|title }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Case type
+      <input name="case_type" value="{{ filters.case_type }}" placeholder="Any case type">
+    </label>
+    <label>Process step
+      <input name="process_step" value="{{ filters.process_step }}" placeholder="Any step">
+    </label>
+    <label>Language
+      <select name="language">
+        <option value="">All languages</option>
+        <option value="de-DE" {% if filters.language == 'de-DE' %}selected{% endif %}>German (de-DE)</option>
+        <option value="en-US" {% if filters.language == 'en-US' %}selected{% endif %}>English (en-US)</option>
+      </select>
+    </label>
+    <div class="filter-actions">
+      <button class="button-primary" type="submit">Apply Filters</button>
+      <a class="button" href="/cases">Reset</a>
+      <span id="case-loading" class="muted htmx-indicator">Loading…</span>
+    </div>
+  </form>
+
+  <div id="case-table">{% include 'partials/case_table.html' %}</div>
+</section>
 {% endblock %}
