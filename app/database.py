@@ -33,9 +33,22 @@ def init_db() -> None:
                 conn.exec_driver_sql("ALTER TABLE call_state ADD COLUMN hold_mode BOOLEAN DEFAULT 0")
             if "last_operator_intents" not in call_state_cols:
                 conn.exec_driver_sql("ALTER TABLE call_state ADD COLUMN last_operator_intents VARCHAR(255)")
+
+            profile_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(profiles)")}
+            for col, ddl in {
+                "language_mode": "VARCHAR(20) DEFAULT 'fixed'",
+                "preferred_language": "VARCHAR(10) DEFAULT 'de-DE'",
+                "notes": "TEXT",
+            }.items():
+                if col not in profile_cols:
+                    conn.exec_driver_sql(f"ALTER TABLE profiles ADD COLUMN {col} {ddl}")
             case_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(cases)")}
             if "scenario" not in case_cols:
                 conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN scenario VARCHAR(60) DEFAULT 'correct_malo_id'")
+            if "profile_id" not in case_cols:
+                conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN profile_id INTEGER REFERENCES profiles(id)")
+            if "resolution_summary" not in case_cols:
+                conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN resolution_summary TEXT")
             extraction_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(call_extractions)")}
             for col, ddl in {
                 "scenario": "VARCHAR(60) DEFAULT 'correct_malo_id'",
@@ -53,7 +66,12 @@ def init_db() -> None:
             conn.exec_driver_sql("ALTER TABLE call_state ADD COLUMN IF NOT EXISTS registration_status VARCHAR(60)")
             conn.exec_driver_sql("ALTER TABLE call_state ADD COLUMN IF NOT EXISTS hold_mode BOOLEAN DEFAULT FALSE")
             conn.exec_driver_sql("ALTER TABLE call_state ADD COLUMN IF NOT EXISTS last_operator_intents VARCHAR(255)")
+            conn.exec_driver_sql("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS language_mode VARCHAR(20) DEFAULT 'fixed'")
+            conn.exec_driver_sql("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10) DEFAULT 'de-DE'")
+            conn.exec_driver_sql("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS notes TEXT")
             conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN IF NOT EXISTS scenario VARCHAR(60) DEFAULT 'correct_malo_id'")
+            conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id)")
+            conn.exec_driver_sql("ALTER TABLE cases ADD COLUMN IF NOT EXISTS resolution_summary TEXT")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS scenario VARCHAR(60) DEFAULT 'correct_malo_id'")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS original_market_location_number VARCHAR(120)")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS meter_inactive_reason TEXT")

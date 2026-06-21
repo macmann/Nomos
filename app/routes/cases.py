@@ -4,13 +4,16 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from app.config import get_settings
 from app.database import get_db
-from app.models import ActionRun, Call, CallExtraction, Case
+from app.models import ActionRun, Call, CallEvent, CallExtraction, Case, Profile
 from app.security import current_admin
 from app.services.scenario_templates import DEFAULT_SCENARIO, SCENARIOS, get_scenario, normalize_scenario, scenario_label
+from app.services.twilio_service import TwilioService
+from app.settings_service import SettingsService
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
-STATUSES=['pending','calling','resolved','customer_action_required','escalated','failed','closed']
-FIELDS=['scenario','external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','problem_description','required_outcome','language_mode','preferred_language']
+STATUSES=['pending','calling','resolved','needs_manual_review','customer_action_required','escalated','failed','closed']
+FIELDS=['profile_id','scenario','external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','problem_description','required_outcome','language_mode','preferred_language']
 @router.get('/cases')
 def list_cases(request:Request, status:str='', case_type:str='', process_step:str='', language:str='', db:Session=Depends(get_db), admin=Depends(current_admin)):
     q=db.query(Case)
@@ -21,10 +24,16 @@ def list_cases(request:Request, status:str='', case_type:str='', process_step:st
     cases=q.order_by(Case.created_at.desc()).all(); tpl='partials/case_table.html' if request.headers.get('hx-request') else 'cases.html'
     return templates.TemplateResponse(request, tpl, {'title':'Cases','cases':cases})
 @router.get('/cases/new')
-def new_case(request:Request, admin=Depends(current_admin)): return templates.TemplateResponse(request, 'case_form.html', {'title':'Create Case','scenarios':SCENARIOS,'default_scenario':DEFAULT_SCENARIO})
+def new_case(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
+    profiles=db.query(Profile).order_by(Profile.name.asc()).all()
+    return templates.TemplateResponse(request, 'case_form.html', {'title':'Create Case','scenarios':SCENARIOS,'default_scenario':DEFAULT_SCENARIO,'profiles':profiles})
 @router.post('/cases')
 async def create_case(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     form=await request.form(); data={k:form.get(k) or None for k in FIELDS}; data['scenario']=normalize_scenario(data.get('scenario')); scenario=get_scenario(data['scenario'])
+    profile = db.get(Profile, int(data['profile_id'])) if data.get('profile_id') else None
+    if profile:
+        for field in ['customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','language_mode','preferred_language']:
+            if not data.get(field): data[field]=getattr(profile, field)
     if not data.get('case_type'): data['case_type']=scenario['case_type']
     if not data.get('problem_description'): data['problem_description']=scenario['problem_description']
     if not data.get('required_outcome'): data['required_outcome']=scenario['required_outcome']
@@ -32,7 +41,18 @@ async def create_case(request:Request, db:Session=Depends(get_db), admin=Depends
     if date:
         try: data['registration_sent_at']=datetime.fromisoformat(date)
         except ValueError: pass
-    db.add(Case(**data)); db.commit(); return RedirectResponse('/cases',303)
+    data['profile_id'] = int(data['profile_id']) if data.get('profile_id') else None
+    case=Case(**data); db.add(case); db.commit(); db.refresh(case)
+    if form.get('start_call') and case.target_phone_number:
+        ss=SettingsService(db,get_settings().app_encryption_key)
+        call=Call(case_id=case.id, from_number=ss.get('twilio_phone_number'), to_number=case.target_phone_number, active_language=case.preferred_language if case.language_mode=='fixed' else ss.get('outbound_default_language','de-DE'))
+        db.add(call); db.commit(); db.refresh(call)
+        try:
+            tw=TwilioService(ss).create_call(case.target_phone_number, call.id); call.twilio_call_sid=tw.sid; call.status='initiating'; case.status='calling'; db.add(CallEvent(call_id=call.id,event_type='call_started',event_payload={'twilio_sid':tw.sid}))
+        except Exception as e:
+            call.status='failed'; call.error_message=str(e); db.add(CallEvent(call_id=call.id,event_type='error',event_payload={'message':str(e)}))
+        db.commit(); return RedirectResponse(f'/cases/{case.id}',303)
+    return RedirectResponse('/cases',303)
 @router.get('/cases/import-fixtures')
 def import_page(request:Request, admin=Depends(current_admin)): return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures'})
 @router.post('/cases/import-fixtures')

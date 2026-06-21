@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<form method="post" action="{{ '/profiles/' ~ profile.id if profile else '/profiles' }}" class="card grid grid-2">
+  <label>Profile Name<input name="name" value="{{ profile.name if profile else '' }}" required placeholder="Customer / site name"></label>
+  <label>Customer Name<input name="customer_name" value="{{ profile.customer_name if profile else '' }}"></label>
+  <label>Customer Email<input name="customer_email" value="{{ profile.customer_email if profile else '' }}"></label>
+  <label>Customer Address<input name="customer_address" value="{{ profile.customer_address if profile else '' }}"></label>
+  <label>Meter Number<input name="meter_number" value="{{ profile.meter_number if profile else '' }}"></label>
+  <label>Market Location Number<input name="market_location_number" value="{{ profile.market_location_number if profile else '' }}"></label>
+  <label>Grid Provider<input name="grid_operator_name" value="{{ profile.grid_operator_name if profile else '' }}"></label>
+  <label>Grid Provider Phone<input name="target_phone_number" value="{{ profile.target_phone_number if profile else '' }}"></label>
+  <label>Language Mode<select name="language_mode"><option {% if not profile or profile.language_mode == 'fixed' %}selected{% endif %}>fixed</option><option {% if profile and profile.language_mode == 'auto' %}selected{% endif %}>auto</option></select></label>
+  <label>Preferred Language<select name="preferred_language"><option {% if not profile or profile.preferred_language == 'de-DE' %}selected{% endif %}>de-DE</option><option {% if profile and profile.preferred_language == 'en-US' %}selected{% endif %}>en-US</option></select></label>
+  <label class="grid-span-2">Notes<textarea name="notes">{{ profile.notes if profile else '' }}</textarea></label>
+  <button class="button-primary" type="submit">Save Profile</button>
+</form>
+{% endblock %}

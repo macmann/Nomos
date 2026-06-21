@@ -1,13 +1,20 @@
 {% extends 'base.html' %}
 {% block content %}
 <form method="post" action="/cases" class="card grid grid-2">
+  <label>Profile
+    <select name="profile_id" id="profile-select">
+      <option value="">No profile / manual entry</option>
+      {% for profile in profiles %}<option value="{{ profile.id }}" {% if request.query_params.get('profile_id') == profile.id|string %}selected{% endif %}>{{ profile.name }}{% if profile.customer_name %} — {{ profile.customer_name }}{% endif %}</option>{% endfor %}
+    </select>
+    <small class="muted">Reuse saved CRM data for customer, meter, grid provider, phone, and language.</small>
+  </label>
   <label>Scenario
     <select name="scenario" id="scenario-select">
       {% for key, scenario in scenarios.items() %}<option value="{{ key }}" {% if key == default_scenario %}selected{% endif %}>{{ scenario.label }}</option>{% endfor %}
     </select>
   </label>
   {% for n in ['external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','registration_sent_at','grid_operator_name','target_phone_number','required_outcome'] %}<label>{{ n|replace('_',' ')|title }}<input name="{{ n }}" id="{{ n }}"></label>{% endfor %}
-  <label>Problem Description<textarea name="problem_description" id="problem_description"></textarea></label>
+  <label class="grid-span-2">Issue Description<textarea name="problem_description" id="problem_description" placeholder="Describe only the new issue/status update needed for this case."></textarea></label>
   <label>Language Mode<select name="language_mode"><option>fixed</option><option>auto</option></select></label>
   <label>Preferred Language<select name="preferred_language"><option>de-DE</option><option>en-US</option></select></label>
   <div class="toolbar">
@@ -15,9 +22,15 @@
     <button type="button" data-demo="meter_status_clarification">Demo Case 2</button>
   </div>
   <button class="button-primary" type="submit">Create Case</button>
+  <button class="button-secondary" type="submit" name="start_call" value="1">Create Case & Start Call</button>
 </form>
 <script>
 const scenarios = {{ scenarios|tojson }};
+const profiles = {
+{% for profile in profiles %}
+  "{{ profile.id }}": {customer_name: {{ (profile.customer_name or '')|tojson }}, customer_email: {{ (profile.customer_email or '')|tojson }}, customer_address: {{ (profile.customer_address or '')|tojson }}, meter_number: {{ (profile.meter_number or '')|tojson }}, market_location_number: {{ (profile.market_location_number or '')|tojson }}, grid_operator_name: {{ (profile.grid_operator_name or '')|tojson }}, target_phone_number: {{ (profile.target_phone_number or '')|tojson }}, language_mode: {{ (profile.language_mode or 'fixed')|tojson }}, preferred_language: {{ (profile.preferred_language or 'de-DE')|tojson }}},
+{% endfor %}
+};
 const demoCases = {
   correct_malo_id: {scenario:'correct_malo_id', customer_name:'Max Müller', customer_address:'Musterstraße 12, 55130 Mainz-Kastel', market_location_number:'51280049120', problem_description:'MaLo does not match address'},
   meter_status_clarification: {scenario:'meter_status_clarification', external_case_id:'TEST-METER-STATUS-001', case_type:'meter_status_clarification', customer_name:'Anna Schneider', customer_email:'anna.schneider.demo@example.com', customer_address:'Beispielweg 7, 10115 Berlin', meter_number:'TEST-ZAEHLER-789456', market_location_number:'50676912345', registration_sent_at:'2026-06-21', grid_operator_name:'Test Netz Berlin GmbH', problem_description:'The registration cannot proceed automatically because the meter status needs confirmation from the grid operator.', required_outcome:'Confirm whether the meter is active, inactive, removed, or temporary, and determine whether Nomos can retry the registration or should contact the customer.', preferred_language:'en-US'}
@@ -31,6 +44,11 @@ function applyScenario(overwrite=false) {
   setValue('required_outcome', tpl.required_outcome, overwrite);
 }
 document.getElementById('scenario-select').addEventListener('change', () => applyScenario(true));
+document.getElementById('profile-select').addEventListener('change', () => {
+  const profile = profiles[document.getElementById('profile-select').value];
+  if (!profile) return;
+  ['customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','language_mode','preferred_language'].forEach(id => setValue(id, profile[id] || '', true));
+});
 document.querySelectorAll('[data-demo]').forEach(btn => btn.addEventListener('click', () => {
   const demo = demoCases[btn.dataset.demo];
   document.getElementById('scenario-select').value = demo.scenario;
@@ -38,5 +56,6 @@ document.querySelectorAll('[data-demo]').forEach(btn => btn.addEventListener('cl
   applyScenario(false);
 }));
 applyScenario(false);
+if (document.getElementById('profile-select').value) document.getElementById('profile-select').dispatchEvent(new Event('change'));
 </script>
 {% endblock %}

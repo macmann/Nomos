@@ -207,6 +207,7 @@ def _save_extraction(db, call: Call, data: dict[str, Any]) -> None:
     if call.case:
         if data.get("outcome") == "resolved":
             call.case.status = "resolved"
+            call.case.resolution_summary = data.get("plain_language_note") or data.get("summary") or "Status update resolved by latest call extraction."
         elif data.get("next_action") == "needs_manual_review" or data.get("outcome") == "needs_manual_review":
             call.case.status = "needs_manual_review"
         else:

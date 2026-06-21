@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="toolbar"><a class="button button-primary" href="/profiles/new">New Profile</a><a class="button" href="/cases/new">Create Case from Profile</a></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Customer</th><th>Grid provider</th><th>MaLo</th><th>Phone</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for profile in profiles %}
+      <tr>
+        <td>{{ profile.name }}</td>
+        <td>{{ profile.customer_name or '—' }}<br><span class="muted">{{ profile.customer_email or '' }}</span></td>
+        <td>{{ profile.grid_operator_name or '—' }}</td>
+        <td>{{ profile.market_location_number or '—' }}</td>
+        <td>{{ profile.target_phone_number or '—' }}</td>
+        <td><a href="/profiles/{{ profile.id }}/edit">Edit</a> · <a href="/cases/new?profile_id={{ profile.id }}">New case</a></td>
+      </tr>
+      {% else %}<tr><td colspan="6" class="muted">No profiles yet. Add CRM-style customer and grid provider data once, then reuse it for cases.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

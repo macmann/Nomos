@@ -173,3 +173,5 @@ body:before{right:-120px}
 .content:has(.calls-table-wrap){max-width:calc(100vw - 76px)}
 .calls-table-wrap table{min-width:1320px}
 .calls-table-wrap th:last-child,.calls-table-wrap td:last-child{white-space:nowrap;width:1%}
+
+.grid-span-2{grid-column:1/-1}
