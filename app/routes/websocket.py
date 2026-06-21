@@ -15,6 +15,7 @@ from app.models import Call, CallEvent, CallTranscript
 from app.services.elevenlabs_service import ElevenLabsService
 from app.services.language_service import detect_language, dtmf_for_ivr, is_ivr
 from app.services.openai_agent_service import OpenAIAgentService
+from app.services.call_extraction_service import extract_call_result
 from app.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -615,6 +616,11 @@ async def media(ws: WebSocket, call_id: int):
                     logger.warning("NOMOS_WS_STOP call_id=%s", call_id)
                     _write_event(call_id, "twilio_stop_received", {"streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid"), "stop": msg.get("stop") or {}})
                     _update_call(call_id, status="completed", ended_at=datetime.utcnow())
+                    try:
+                        extract_call_result(call_id)
+                    except Exception as exc:
+                        logger.exception("NOMOS_POST_CALL_EXTRACTION_FAILED call_id=%s", call_id)
+                        _write_event(call_id, "extraction_failed", {"message": str(exc)})
                     break
                 else:
                     _write_event(call_id, "unknown_twilio_event", {"event": event})
