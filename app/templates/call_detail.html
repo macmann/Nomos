@@ -1,31 +1,35 @@
 {% extends 'base.html' %}
 {% block content %}
-<section class="card call-detail-tabs">
+<section class="card call-detail-tabs call-detail-console">
   <input class="call-detail-tab-input" type="radio" id="call-detail-tab-normal" name="call-detail-tabs" checked>
   <input class="call-detail-tab-input" type="radio" id="call-detail-tab-advanced" name="call-detail-tabs">
-  <div class="call-detail-tab-list" role="tablist" aria-label="Call detail views">
+  <div class="call-detail-tab-list" role="tablist" aria-label="Call details views">
     <label class="call-detail-tab-label" for="call-detail-tab-normal" role="tab">Normal</label>
     <label class="call-detail-tab-label" for="call-detail-tab-advanced" role="tab">Advanced</label>
   </div>
   <div class="call-detail-tab-panels">
     <div class="call-detail-tab-panel">
-      <section>
-        <h3>Output</h3>
-        {% for x in extractions %}
-          <div class="timeline-item">
-            <p>{{ x.plain_language_note or 'No plain-language output available.' }}</p>
-          </div>
-        {% else %}
-          <p class="muted">No output available yet.</p>
-        {% endfor %}
-      </section>
+      <div class="call-detail-overview">
+        <section class="call-summary-panel">
+          <p class="eyebrow live-eyebrow">Call output</p>
+          <h2>What happened</h2>
+          {% for x in extractions %}
+            <blockquote class="call-output-note">{{ x.plain_language_note or 'No plain-language output available.' }}</blockquote>
+          {% else %}
+            <p class="muted">No output available yet.</p>
+          {% endfor %}
+        </section>
+        <aside class="call-status-panel" aria-label="Call status summary">
+          <span class="badge badge-{{ call.status or 'pending' }}">{{ call.status or 'pending' }}</span>
+          <dl>
+            <dt>Scenario</dt><dd>{{ scenario_label(call.case.scenario) }}</dd>
+            <dt>Language</dt><dd>{{ call.active_language or '—' }}</dd>
+            <dt>Call SID</dt><dd>{{ call.twilio_call_sid or '—' }}</dd>
+          </dl>
+        </aside>
+      </div>
       <section class="section-spaced">
-        <h3>Transcript</h3>
-        {% for t in transcripts %}
-          <p><b>{{ t.speaker }}</b> [{{ t.language }}]: {{ t.text }}</p>
-        {% else %}
-          <p class="muted">No transcript available.</p>
-        {% endfor %}
+        {% include 'partials/live_transcript.html' %}
       </section>
     </div>
     <div class="call-detail-tab-panel">

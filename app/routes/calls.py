@@ -74,7 +74,15 @@ def call_detail(call_id:int, request:Request, db:Session=Depends(get_db), admin=
     if not call: raise HTTPException(status_code=404, detail='Call not found')
     events=db.query(CallEvent).filter_by(call_id=call_id).all()
     latest_knowledge_event = next((e for e in reversed(events) if e.event_type == 'agent_knowledge_selected'), None)
-    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'latest_knowledge_event':latest_knowledge_event,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all(),'scenario_label':scenario_label})
+    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Details','call':call,'events':events,'latest_knowledge_event':latest_knowledge_event,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all(),'scenario_label':scenario_label})
+
+@router.get('/calls/{call_id}/transcript')
+def call_transcript(call_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
+    call=db.get(Call,call_id)
+    if not call: raise HTTPException(status_code=404, detail='Call not found')
+    transcripts=db.query(CallTranscript).filter_by(call_id=call_id).order_by(CallTranscript.created_at.asc()).all()
+    return templates.TemplateResponse(request, 'partials/live_transcript.html', {'call':call,'transcripts':transcripts})
+
 @router.post('/calls/outbound')
 @router.post('/api/calls/outbound')
 def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(current_admin)):
