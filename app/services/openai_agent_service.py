@@ -6,7 +6,8 @@ from typing import Any
 import httpx
 
 from app.agents.clearing_agent import ALLOWED_PHASES, LIVE_VOICE_SYSTEM_PROMPT, digit_words, normalize_spoken_digits, similar
-from app.models import Call, CallState, CallTranscript
+from app.models import Call, CallEvent, CallState, CallTranscript
+from app.services.scenario_knowledge import get_relevant_knowledge, matched_knowledge_tags
 from app.services.scenario_templates import get_scenario, normalize_scenario
 
 logger = logging.getLogger(__name__)
@@ -189,7 +190,14 @@ class OpenAIAgentService:
             logger.warning("NOMOS_DETERMINISTIC_FALLBACK_USED reason=missing_openai_api_key")
             return self._policy(call, state, transcript, intent)
         scenario_context = _scenario_context(call.case)
-        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "scenario_context": scenario_context, "conversation_directive": directive, "case_details": {"scenario": scenario_context["scenario"], "scenario_label": scenario_context["scenario_label"], "address": call.case.customer_address, "meter_number": call.case.meter_number, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "instruction": "Return only valid JSON. This is live conversation, not final extraction. Speak naturally and leave final structuring to post-call extraction. For inactive_meter clarify active/inactive/removed/temporary; if temporary, ask whether it is still active or no longer usable. Ask what Nomos should do next in natural language. Avoid field names like next_action, manual review, or current result. Do not force MaLo unless relevant. Do not ask for known facts; acknowledge frustration; one short human question max."}
+        scenario_knowledge = get_relevant_knowledge(scenario_context["scenario"], transcript)
+        knowledge_tags = sorted({tag for item in scenario_knowledge for tag in item.get("tags", [])})
+        operator_question_detected = bool(matched_knowledge_tags(transcript))
+        logger.warning("NOMOS_KNOWLEDGE_SELECTED scenario=%s count=%s", scenario_context["scenario"], len(scenario_knowledge))
+        logger.warning("NOMOS_KNOWLEDGE_TAGS tags=%s", ",".join(knowledge_tags))
+        logger.warning("NOMOS_OPERATOR_QUESTION_DETECTED %s", str(operator_question_detected).lower())
+        self._record_knowledge_debug(call, scenario_context["scenario"], scenario_knowledge, knowledge_tags, operator_question_detected)
+        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "scenario_context": scenario_context, "conversation_directive": directive, "case_details": {"scenario": scenario_context["scenario"], "scenario_label": scenario_context["scenario_label"], "address": call.case.customer_address, "meter_number": call.case.meter_number, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "scenario_knowledge_snippets": scenario_knowledge, "operator_question_detected": operator_question_detected, "instruction": "Return only valid JSON. This is live conversation, not final extraction. Speak naturally and leave final structuring to post-call extraction. You may use the scenario knowledge to answer operator questions, but do not read it verbatim. Answer naturally in one short sentence, then gently return to the clearing task. Do not over-explain. If the operator asks an unrelated light question, answer briefly and bridge back to the case. For inactive_meter clarify active/inactive/removed/temporary; if temporary, ask whether it is still active or no longer usable. Ask what Nomos should do next in natural language. Avoid field names like next_action, manual review, or current result. Do not force MaLo unless relevant. Do not ask for known facts; acknowledge frustration; one short human question max."}
         try:
             async with httpx.AsyncClient(timeout=20) as c:
                 r = await c.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {key}'}, json={'model': self.settings.get('openai_model', 'gpt-4.1-mini'), 'temperature': float(self.settings.get('openai_temperature', '0.2') or 0.2), 'messages': [{'role': 'system', 'content': LIVE_VOICE_SYSTEM_PROMPT}, {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}], 'response_format': {'type': 'json_object'}})
@@ -199,6 +207,19 @@ class OpenAIAgentService:
                 logger.warning("NOMOS_LLM_SPOKEN_REPLY text=%s", result.get("spoken_reply") or ""); return result
         except Exception:
             logger.exception("NOMOS_AGENT_LLM_FAILED using_policy_fallback=true"); logger.warning("NOMOS_DETERMINISTIC_FALLBACK_USED reason=openai_failed"); return self._policy(call, state, transcript, intent)
+
+
+    def _record_knowledge_debug(self, call: Call, scenario: str, snippets: list[dict[str, Any]], tags: list[str], question_detected: bool) -> None:
+        try:
+            from sqlalchemy.orm import object_session
+
+            db = object_session(call)
+            if db is None:
+                return
+            db.add(CallEvent(call_id=call.id, event_type="agent_knowledge_selected", event_payload={"scenario": scenario, "count": len(snippets), "tags": tags, "operator_question_detected": question_detected, "snippets": snippets}))
+            db.flush()
+        except Exception:
+            logger.exception("NOMOS_KNOWLEDGE_DEBUG_EVENT_FAILED call_id=%s", getattr(call, "id", None))
 
     def _valid_llm_result(self, result: Any) -> bool:
         return isinstance(result, dict) and RESPONSE_FIELDS <= set(result) and result.get("phase") in ALLOWED_PHASES and isinstance(result.get("extracted_updates"), dict)

@@ -73,7 +73,8 @@ def call_detail(call_id:int, request:Request, db:Session=Depends(get_db), admin=
     call=db.get(Call,call_id)
     if not call: raise HTTPException(status_code=404, detail='Call not found')
     events=db.query(CallEvent).filter_by(call_id=call_id).all()
-    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all(),'scenario_label':scenario_label})
+    latest_knowledge_event = next((e for e in reversed(events) if e.event_type == 'agent_knowledge_selected'), None)
+    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'latest_knowledge_event':latest_knowledge_event,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all(),'scenario_label':scenario_label})
 @router.post('/calls/outbound')
 @router.post('/api/calls/outbound')
 def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(current_admin)):
