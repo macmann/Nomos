@@ -20,6 +20,14 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 def init_db() -> None:
     from . import models  # noqa
     Base.metadata.create_all(bind=engine)
+    # Lightweight additive migrations for deployments without Alembic.
+    with engine.begin() as conn:
+        if engine.url.get_backend_name() == "sqlite":
+            existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(call_transcripts)")}
+            if "source" not in existing:
+                conn.exec_driver_sql("ALTER TABLE call_transcripts ADD COLUMN source VARCHAR(30) DEFAULT 'stt'")
+        elif engine.url.get_backend_name().startswith("postgresql"):
+            conn.exec_driver_sql("ALTER TABLE call_transcripts ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'stt'")
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
