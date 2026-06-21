@@ -130,17 +130,19 @@ class OpenAIAgentService:
         field = None; value = None
         digits = normalize_spoken_digits(text)
         if re.search(r"hold on|give me a second|i'?m checking|please hold|wait|moment|one second|warte|augenblick", text): intents.add("asks_to_wait")
-        if re.search(r"what are you talking about|what do you mean|what do you want|why are you calling|huh|clarify", text): intents.update({"asks_clarification", "asks_human_like_clarification"})
+        if re.search(r"what are you talking about|what meter|which meter|what do you mean|what do you want|why are you calling|huh|clarify|repeat the address|repeat.*address", text): intents.update({"asks_clarification", "asks_human_like_clarification"})
         if re.search(r"already told|you'?re fired|why are you asking again|annoying|stupid|nonsense|stop asking|what do you want", text): intents.add("expresses_frustration")
         if re.search(r"already told|as i said|again", text): intents.add("repeats_information")
         if re.search(r"no[, ]+that'?s wrong|start again|correction|correct that|not .* but", text): intents.add("corrects_previous_information")
         if re.fullmatch(r"(yes|yeah|correct|right|that'?s correct|ja|richtig|stimmt|ok|okay)[.! ]*", text): intents.add("confirms_yes")
         if re.fullmatch(r"(no|nope|nein)[.! ]*", text): intents.add("denies_no")
         if digits and (len(digits) < MALO_LENGTH or _state_attr(state, "partial_malo_digits")): intents.add("partial_number_continuation")
-        if re.search(r"inactive|no longer active|removed|temporary|construction meter|being built|baustrom|ausgebaut|inaktiv", text):
+        if re.search(r"active|inactive|no longer active|removed|temporary|construction meter|being built|baustrom|ausgebaut|inaktiv", text):
             intents.add("provides_information"); field = "meter_status"
             if re.search(r"removed|ausgebaut", text):
                 value = "removed"
+            elif re.search(r"temporary|construction meter|being built|baustrom", text):
+                value = "temporary"
             elif re.search(r"active", text) and not re.search(r"inactive|no longer active", text):
                 value = "active"
             else:
@@ -197,7 +199,8 @@ class OpenAIAgentService:
         logger.warning("NOMOS_KNOWLEDGE_TAGS tags=%s", ",".join(knowledge_tags))
         logger.warning("NOMOS_OPERATOR_QUESTION_DETECTED %s", str(operator_question_detected).lower())
         self._record_knowledge_debug(call, scenario_context["scenario"], scenario_knowledge, knowledge_tags, operator_question_detected)
-        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "scenario_context": scenario_context, "conversation_directive": directive, "case_details": {"scenario": scenario_context["scenario"], "scenario_label": scenario_context["scenario_label"], "address": call.case.customer_address, "meter_number": call.case.meter_number, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "scenario_knowledge_snippets": scenario_knowledge, "operator_question_detected": operator_question_detected, "instruction": "Return only valid JSON. This is live conversation, not final extraction. Speak naturally and leave final structuring to post-call extraction. You may use the scenario knowledge to answer operator questions, but do not read it verbatim. Answer naturally in one short sentence, then gently return to the clearing task. Do not over-explain. If the operator asks an unrelated light question, answer briefly and bridge back to the case. For inactive_meter clarify active/inactive/removed/temporary; if temporary, ask whether it is still active or no longer usable. Ask what Nomos should do next in natural language. Avoid field names like next_action, manual review, or current result. Do not force MaLo unless relevant. Do not ask for known facts; acknowledge frustration; one short human question max."}
+        instruction = ("Return only valid JSON. This is live conversation, not final extraction. Speak naturally and leave final structuring to post-call extraction. You may use the scenario knowledge to answer operator questions, but do not read it verbatim. Answer naturally in one short sentence, then gently return to the clearing task. Do not over-explain. If the operator asks an unrelated light question, answer briefly and bridge back to the case. For meter_status_clarification: Never ask the generic question 'What should Nomos do next?' If the meter is active, ask whether registration can be retried or continued. If the meter is inactive, removed, or no longer usable, ask whether Nomos should contact the customer for current meter details. If the operator already confirmed the next action, summarize and close. Use natural phone-agent wording, not internal workflow terms. Avoid field names like next_action, manual review, or current result. Do not force MaLo unless relevant. Do not ask for known facts; acknowledge frustration; one short human question max.")
+        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "scenario_context": scenario_context, "conversation_directive": directive, "case_details": {"scenario": scenario_context["scenario"], "scenario_label": scenario_context["scenario_label"], "address": call.case.customer_address, "meter_number": call.case.meter_number, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "scenario_knowledge_snippets": scenario_knowledge, "operator_question_detected": operator_question_detected, "instruction": instruction}
         try:
             async with httpx.AsyncClient(timeout=20) as c:
                 r = await c.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {key}'}, json={'model': self.settings.get('openai_model', 'gpt-4.1-mini'), 'temperature': float(self.settings.get('openai_temperature', '0.2') or 0.2), 'messages': [{'role': 'system', 'content': LIVE_VOICE_SYSTEM_PROMPT}, {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}], 'response_format': {'type': 'json_object'}})
@@ -259,7 +262,7 @@ class OpenAIAgentService:
 
     def _next_step(self, call, state, intent):
         intents = set(intent["intents"]); facts=[]
-        if normalize_scenario(getattr(call.case, "scenario", None)) == "inactive_meter":
+        if normalize_scenario(getattr(call.case, "scenario", None)) == "meter_status_clarification":
             if "asks_to_wait" in intents: return "acknowledge_wait", state.phase, [], facts
             if intents & {"asks_clarification", "asks_human_like_clarification"}: return "clarify_case", "waiting_for_case_result", ["meter_status"], facts
             if state.meter_status:
@@ -283,24 +286,41 @@ class OpenAIAgentService:
         intent = intent or self._classify_intent(transcript, state); intents = set(intent["intents"]); updates = _empty_updates(); scenario = normalize_scenario(getattr(call.case, "scenario", None))
         if "asks_to_wait" in intents: return {"spoken_reply": "Of course, I’ll wait.", "phase": state.phase, "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "operator asked to wait"}
         if intents & {"asks_clarification", "asks_human_like_clarification"}:
-            if scenario == "inactive_meter":
-                return {"spoken_reply": f"Sorry, let me clarify. Is that meter still active, or was it only temporary?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
+            if scenario == "meter_status_clarification":
+                lower_text = (transcript or "").lower()
+                if "repeat" in lower_text and "address" in lower_text:
+                    reply = f"Of course. The address is {call.case.customer_address or 'the customer address on this case'}."
+                elif "what meter" in lower_text or "which meter" in lower_text:
+                    reply = f"I mean the electricity meter for {call.case.customer_address or 'the customer address'}. The meter number I have is {call.case.meter_number or 'not available'}."
+                else:
+                    reply = f"Sorry, let me clarify. I’m calling about the electricity meter for {call.case.customer_address or 'the customer address'}. Is meter {call.case.meter_number or 'the meter'} active, inactive, removed, or only temporary?"
+                return {"spoken_reply": reply, "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
             return {"spoken_reply": f"Sorry, let me clarify. What corrected number should Nomos use?", "phase": "collecting_malo_number", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
         prefix = "I’m sorry, you’re right. " if "expresses_frustration" in intents else ""
-        if scenario == "inactive_meter":
+        if scenario == "meter_status_clarification":
             if intent.get("field") == "meter_status" and intent.get("value"):
                 updates["meter_status"] = intent["value"]
                 lower_text = (transcript or "").lower()
-                if "temporary" in lower_text:
-                    reply = "Got it. So this was only a temporary meter. Is it still active, or no longer usable for this customer?"
-                elif intent["value"] in {"inactive", "removed"}:
-                    reply = "Understood. Should Nomos contact the customer for the current meter details?"
+                if intent["value"] == "temporary":
+                    reply = "Got it. Is that temporary meter still usable, or should Nomos ask the customer for the current meter details?"
+                elif intent["value"] == "removed":
+                    reply = "Got it. Should Nomos ask the customer for updated meter details?"
+                elif intent["value"] == "inactive":
+                    reply = "Understood. Should Nomos contact the customer for the current active meter details?"
+                elif "still active" in lower_text:
+                    reply = "Great, thank you. So Nomos can continue the registration with this meter, correct?"
                 else:
                     reply = "Thanks, that helps. Can Nomos retry the registration with this meter?"
                 return {"spoken_reply": reply, "phase": "waiting_for_next_step", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "meter status clarified conversationally"}
             if "confirms_yes" in intents and state.meter_status in {"inactive", "removed"}:
                 updates["meter_status"] = state.meter_status; updates["next_action"] = "notify_customer_by_email"
-                return {"spoken_reply": "Thank you. I’ve noted that the meter is no longer active and Nomos should contact the customer. Goodbye.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "inactive meter resolved"}
+                return {"spoken_reply": "Thank you. I’ve noted that Nomos should contact the customer for current meter details. Goodbye.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "meter status resolved with customer contact"}
+            if "confirms_yes" in intents and state.meter_status in {"active", "temporary"}:
+                updates["meter_status"] = state.meter_status; updates["next_action"] = "retry_registration"
+                return {"spoken_reply": "Great, thank you. I’ve noted that Nomos can continue the registration with this meter. Goodbye.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "meter status resolved with retry"}
+            if "denies_no" in intents and state.meter_status == "temporary":
+                updates["meter_status"] = "temporary"; updates["next_action"] = "notify_customer_by_email"
+                return {"spoken_reply": "Understood. I’ve noted that Nomos should ask the customer for current meter details. Goodbye.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "temporary meter no longer usable"}
             return {"spoken_reply": f"{prefix}Can you confirm whether meter {call.case.meter_number or 'the meter'} is active, inactive, removed, or only temporary?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "ask inactive meter fields"}
         if state.corrected_market_location_number and ("confirms_yes" in intents or re.search(r"resend|send", (transcript or "").lower())):
             updates["corrected_market_location_number"] = state.corrected_market_location_number
@@ -328,7 +348,7 @@ class OpenAIAgentService:
         scenario = normalize_scenario(getattr(case, "scenario", None))
         low = (text or "").lower()
         data = {"scenario": scenario, "outcome": "in_progress", "root_cause": text[:500] or None, "plain_language_note": "MVP extraction generated from saved transcript.", "next_action": "needs_manual_review", "reference_number": None, "market_location_number": case.market_location_number, "original_market_location_number": case.market_location_number, "corrected_market_location_number": None, "meter_number": case.meter_number, "meter_status": "unknown", "registration_status": "unknown", "confidence": 0.5}
-        if scenario == "inactive_meter":
+        if scenario == "meter_status_clarification":
             inactive = "no longer active" in low or "inactive" in low
             removed = "removed" in low
             temporary = "temporary" in low or "construction" in low or "being built" in low

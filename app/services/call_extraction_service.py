@@ -14,7 +14,7 @@ from app.settings_service import SettingsService
 logger = logging.getLogger(__name__)
 
 OUTCOMES = {"resolved", "unresolved", "in_progress", "needs_manual_review"}
-INACTIVE_NEXT_ACTIONS = {"notify_customer_by_email", "retry_registration", "needs_manual_review"}
+METER_STATUS_NEXT_ACTIONS = {"notify_customer_by_email", "retry_registration", "needs_manual_review"}
 MALO_NEXT_ACTIONS = {"update_malo_and_retry_registration", "needs_manual_review"}
 
 
@@ -53,7 +53,7 @@ def _base_schema(scenario: str) -> dict[str, Any]:
         "next_action": "string",
         "plain_language_note": "string",
     }
-    if scenario == "inactive_meter":
+    if scenario == "meter_status_clarification":
         base.update(
             {
                 "meter_number": None,
@@ -63,7 +63,8 @@ def _base_schema(scenario: str) -> dict[str, Any]:
                 "meter_inactive_reason": None,
                 "customer_contact_required": None,
                 "reference_number": None,
-                "next_action": "notify_customer_by_email | retry_registration | needs_manual_review",
+                "registration_can_continue": None,
+                "next_action": "retry_registration | notify_customer_by_email | needs_manual_review",
             }
         )
     elif scenario == "correct_malo_id":
@@ -108,9 +109,9 @@ def _prompt_payload(call: Call, turns: list[CallTranscript], events: list[CallEv
             "Do not over-trust partial, noisy, or contradictory transcript snippets; separate confirmed_facts from uncertain_facts.",
             "Use null when a value is not supported by the transcript or case details.",
             "Include a concise plain-language note for back office.",
-            "For inactive_meter, if the operator says only temporary or temporary meter, set temporary_meter=true and meter_status=temporary.",
-            "For inactive_meter, set customer_contact_required=true if the operator says contact by email or says Nomos should contact the customer.",
-            "For inactive_meter, only set construction_meter=true if the operator explicitly says construction, building phase, building site, temporary construction meter, Baustrom, or similar.",
+            "For meter_status_clarification, if the operator says only temporary or temporary meter, set temporary_meter=true and meter_status=temporary.",
+            "For meter_status_clarification, set customer_contact_required=true if the operator says contact by email or says Nomos should contact the customer.",
+            "For meter_status_clarification, only set construction_meter=true if the operator explicitly says construction, building phase, building site, temporary construction meter, Baustrom, or similar.",
             "If the operator only says temporary, write temporary meter, not temporary construction meter.",
         ],
     }
@@ -131,7 +132,7 @@ def _deterministic_extract(call: Call, turns: list[CallTranscript]) -> dict[str,
         "plain_language_note": "Extraction was generated locally because the LLM was unavailable; please review the transcript.",
         "reference_number": None,
     }
-    if scenario == "inactive_meter":
+    if scenario == "meter_status_clarification":
         temporary = bool(re.search(r"only temporary|temporary meter|temporary|provisorisch|tempor", low))
         construction = bool(re.search(r"construction|building phase|building site|baustrom|temporary construction", low))
         removed = "removed" in low or "ausgebaut" in low
@@ -145,9 +146,10 @@ def _deterministic_extract(call: Call, turns: list[CallTranscript]) -> dict[str,
             "temporary_meter": True if temporary else None,
             "construction_meter": True if construction else False if temporary else None,
             "meter_inactive_reason": "temporary meter" if temporary else None,
-            "customer_contact_required": True if contact else None,
-            "next_action": "notify_customer_by_email" if contact else "retry_registration" if active else "needs_manual_review",
-            "outcome": "resolved" if status in {"temporary", "inactive", "removed", "active"} and (contact or active) else "needs_manual_review",
+            "registration_can_continue": True if active else False if status in {"inactive", "removed"} or (temporary and contact) else None,
+            "customer_contact_required": False if active else True if status in {"inactive", "removed"} or contact else None,
+            "next_action": "notify_customer_by_email" if status in {"inactive", "removed"} or contact else "retry_registration" if active else "needs_manual_review",
+            "outcome": "resolved" if status in {"inactive", "removed", "active"} or (temporary and contact) else "needs_manual_review",
             "plain_language_note": "Operator indicated this was a temporary meter. Nomos should contact the customer by email for current meter details." if temporary and contact else "Review transcript for meter status and next action.",
         })
         data["confirmed_facts"] = [f"meter_status={status}"] if status != "unknown" else []
@@ -174,8 +176,22 @@ def _clean_result(call: Call, data: dict[str, Any]) -> dict[str, Any]:
         data["confidence"] = max(0.0, min(1.0, float(data.get("confidence") or 0.0)))
     except (TypeError, ValueError):
         data["confidence"] = 0.0
-    if scenario == "inactive_meter":
-        if data.get("next_action") not in INACTIVE_NEXT_ACTIONS:
+    if scenario == "meter_status_clarification":
+        status = data.get("meter_status")
+        if status == "active":
+            data["registration_can_continue"] = True if data.get("registration_can_continue") is None else data.get("registration_can_continue")
+            data["customer_contact_required"] = False if data.get("customer_contact_required") is None else data.get("customer_contact_required")
+            if data.get("next_action") in {None, "needs_manual_review"}:
+                data["next_action"] = "retry_registration"
+        elif status in {"inactive", "removed"}:
+            data["registration_can_continue"] = False
+            data["customer_contact_required"] = True
+            if data.get("next_action") in {None, "needs_manual_review"}:
+                data["next_action"] = "notify_customer_by_email"
+        elif status == "temporary" and data.get("customer_contact_required") is True:
+            data["registration_can_continue"] = False
+            data["next_action"] = "notify_customer_by_email"
+        if data.get("next_action") not in METER_STATUS_NEXT_ACTIONS:
             data["next_action"] = "needs_manual_review"
     elif scenario == "correct_malo_id" and data.get("next_action") not in MALO_NEXT_ACTIONS:
         data["next_action"] = "needs_manual_review"
