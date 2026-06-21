@@ -169,3 +169,7 @@ body:before{right:-120px}
 .call-detail-tabs:has(#call-detail-tab-advanced:checked) .call-detail-tab-label[for="call-detail-tab-advanced"]{background:#000;border-color:#000;color:#fff}
 .call-detail-tabs:has(#call-detail-tab-normal:checked) .call-detail-tab-panel:nth-child(1),
 .call-detail-tabs:has(#call-detail-tab-advanced:checked) .call-detail-tab-panel:nth-child(2){display:block}
+
+.content:has(.calls-table-wrap){max-width:calc(100vw - 76px)}
+.calls-table-wrap table{min-width:1320px}
+.calls-table-wrap th:last-child,.calls-table-wrap td:last-child{white-space:nowrap;width:1%}
