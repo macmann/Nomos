@@ -50,14 +50,18 @@ class ElevenLabsService:
         if not key: raise RuntimeError('Missing ElevenLabs API key')
         voice_id = voice_id or self.settings.get('elevenlabs_de_voice_id') or self.settings.get('elevenlabs_en_voice_id')
         if not voice_id: raise RuntimeError('Missing ElevenLabs voice ID')
-        model_id = model_id or self.settings.get('elevenlabs_tts_model','eleven_multilingual_v2')
+        model_id = model_id or self.settings.get('elevenlabs_tts_model','eleven_flash_v2_5') or 'eleven_flash_v2_5'
         output_format = output_format or self.settings.get('tts_output_format','ulaw_8000') or 'ulaw_8000'
         url=f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}'
         params={'output_format': output_format}
-        body={'text': text, 'model_id': model_id}
+        body={'text': text, 'model_id': model_id, 'voice_settings': {'stability': float(self.settings.get('elevenlabs_stability', '0.75') or 0.75), 'similarity_boost': float(self.settings.get('elevenlabs_similarity_boost', '0.75') or 0.75), 'style': float(self.settings.get('elevenlabs_style', '0.1') or 0.1), 'use_speaker_boost': str(self.settings.get('elevenlabs_use_speaker_boost', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}}}
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(url, params=params, json=body, headers={'xi-api-key':key})
-            logger.warning('NOMOS_ELEVENLABS_TTS_STATUS status=%s bytes=%s format=%s', r.status_code, len(r.content or b''), output_format)
+            logger.warning('NOMOS_ELEVENLABS_TTS_STATUS status=%s bytes=%s format=%s model=%s', r.status_code, len(r.content or b''), output_format, model_id)
+            if r.status_code >= 400 and model_id == 'eleven_flash_v2_5':
+                fallback_model='eleven_multilingual_v2'
+                r=await c.post(url, params=params, json={**body, 'model_id': fallback_model}, headers={'xi-api-key':key})
+                logger.warning('NOMOS_ELEVENLABS_TTS_STATUS status=%s bytes=%s format=%s model=%s fallback_model=true', r.status_code, len(r.content or b''), output_format, fallback_model)
             if r.status_code >= 400 and output_format == 'ulaw_8000':
                 fallback='pcm_16000'
                 r=await c.post(url, params={'output_format': fallback}, json=body, headers={'xi-api-key':key})
@@ -68,7 +72,9 @@ class ElevenLabsService:
     async def synthesize_for_twilio(self, text: str, voice_id: str | None = None, model_id: str | None = None, output_format: str | None = None):
         try:
             audio, fmt = await self.synthesize(text, voice_id, model_id, output_format)
-            return True, convert_audio_to_twilio_mulaw_8khz(audio, fmt), 'ulaw_8000', f'TTS bytes {len(audio)}'
+            twilio_audio = convert_audio_to_twilio_mulaw_8khz(audio, fmt)
+            logger.warning('NOMOS_TTS_FORMAT format=ulaw_8000 raw=true bytes=%s', len(twilio_audio))
+            return True, twilio_audio, 'ulaw_8000', f'TTS bytes {len(audio)}'
         except Exception as e:
             logger.exception('NOMOS_TTS_ERROR')
             return False, b'', output_format or 'ulaw_8000', str(e)

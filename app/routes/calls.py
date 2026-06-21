@@ -11,7 +11,7 @@ from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
 from app.services.scenario_templates import scenario_label
-from app.routes.websocket import ACTIVE_TWILIO_SESSIONS, is_valid_user_transcript, send_test_greeting
+from app.routes.websocket import ACTIVE_TWILIO_SESSIONS, is_valid_user_transcript, send_test_greeting, send_test_reply
 from app.settings_service import SettingsService
 
 def _bool_setting(value, default=False):
@@ -54,6 +54,13 @@ def _voice_debug_summary(db, call_id):
         'tts_responses_skipped': stats.get('tts_responses_skipped', len([e for e in events if e.event_type == 'audio_queue_backpressure' and (e.event_payload or {}).get('action') == 'skip_new_response'])),
         'agent_responses_queued_to_tts': stats.get('tts_responses_queued', len([e for e in events if e.event_type == 'agent_tts_queued'])),
         'tts_chunks_sent': stats.get('tts_chunks_sent', len([e for e in events if e.event_type == 'twilio_audio_chunk_sent'])),
+        'last_tts_text_length': stats.get('last_tts_text_length'),
+        'last_tts_byte_length': stats.get('last_tts_byte_length'),
+        'last_tts_duration_estimate': stats.get('last_tts_duration_estimate'),
+        'tts_chunks_queued': stats.get('tts_chunks_queued', 0),
+        'last_sender_send_duration': stats.get('last_sender_send_duration'),
+        'dropped_responses': stats.get('dropped_responses', 0),
+        'average_chunk_send_delay': stats.get('average_chunk_send_delay', 0),
     }
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
@@ -91,6 +98,13 @@ async def debug_send_greeting(call_id:int, db:Session=Depends(get_db), admin=Dep
     db.add(CallEvent(call_id=call_id, event_type='debug_greeting_requested', event_payload={'success': ok}))
     db.commit()
     return JSONResponse({'success': ok, 'message': 'Greeting sent' if ok else 'No active websocket session for this call'})
+
+@router.post('/calls/{call_id}/debug-send-short-test-reply')
+async def debug_send_short_test_reply(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
+    ok = await send_test_reply(call_id, "Thanks. I’ll note that.", "en-US", "short_test_reply")
+    db.add(CallEvent(call_id=call_id, event_type='debug_short_test_reply_requested', event_payload={'success': ok}))
+    db.commit()
+    return JSONResponse({'success': ok, 'message': 'Short test reply sent' if ok else 'No active websocket session for this call'})
 
 @router.post('/calls/{call_id}/extract')
 async def extract(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
