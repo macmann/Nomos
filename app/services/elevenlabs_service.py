@@ -2,7 +2,7 @@ import logging
 
 import httpx
 
-from app.services.twilio_service import convert_audio_to_twilio_mulaw_8khz, convert_twilio_mulaw_to_wav_pcm16k
+from app.services.twilio_service import convert_audio_to_twilio_mulaw_8khz, convert_twilio_mulaw_to_wav_pcm16_16khz
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +58,18 @@ class ElevenLabsService:
             logger.exception('NOMOS_TTS_ERROR')
             return False, b'', output_format or 'ulaw_8000', str(e)
 
-    async def transcribe_chunk(self, audio: bytes):
+    async def transcribe_chunk(self, audio: bytes, language_code: str | None = None):
         key=self.settings.get('elevenlabs_api_key')
         if not key: return None
-        wav = convert_twilio_mulaw_to_wav_pcm16k(audio)
+        logger.warning('NOMOS_STT_CONVERT input_mulaw_bytes=%s', len(audio or b''))
+        wav = convert_twilio_mulaw_to_wav_pcm16_16khz(audio)
+        logger.warning('NOMOS_STT_CONVERT output_wav_bytes=%s', len(wav or b''))
         model = self.settings.get('elevenlabs_stt_model','scribe_v1')
         async with httpx.AsyncClient(timeout=30) as c:
-            files={'file': ('twilio.wav', wav, 'audio/wav')}
+            files={'file': ('audio.wav', wav, 'audio/wav')}
             data={'model_id': model}
+            if language_code:
+                data['language_code'] = language_code
             r=await c.post('https://api.elevenlabs.io/v1/speech-to-text', headers={'xi-api-key':key}, data=data, files=files)
             logger.warning('NOMOS_ELEVENLABS_STT_STATUS status=%s bytes=%s', r.status_code, len(r.content or b''))
             r.raise_for_status()

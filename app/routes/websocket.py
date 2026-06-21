@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketState
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -21,11 +20,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 ACTIVE_TWILIO_SESSIONS: dict[int, dict[str, Any]] = {}
 GREETING = "Guten Tag, ich bin ein KI-Assistent von Nomos. Dies ist ein kurzer Verbindungstest."
+INVALID_TRANSCRIPTS = {"(screeching noise)", "[noise]", "(noise)", "[silence]", "(silence)", ""}
 
 
 def _bool_setting(value: Any, default: bool = False) -> bool:
-    if value is None: return default
+    if value is None:
+        return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _int_setting(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_setting(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _safe_raw(raw: str, limit: int = 1000) -> str:
@@ -35,9 +50,11 @@ def _safe_raw(raw: str, limit: int = 1000) -> str:
 def _write_event(call_id: int, event_type: str, payload: dict | None = None) -> None:
     db = SessionLocal()
     try:
-        db.add(CallEvent(call_id=call_id, event_type=event_type, event_payload=payload or {})); db.commit()
+        db.add(CallEvent(call_id=call_id, event_type=event_type, event_payload=payload or {}))
+        db.commit()
     except Exception:
-        db.rollback(); logger.exception("NOMOS_WS_ERROR failed_to_persist call_id=%s event_type=%s", call_id, event_type)
+        db.rollback()
+        logger.exception("NOMOS_WS_ERROR failed_to_persist call_id=%s event_type=%s", call_id, event_type)
     finally:
         db.close()
 
@@ -47,10 +64,12 @@ def _update_call(call_id: int, **updates: Any) -> None:
     try:
         call = db.get(Call, call_id)
         if call:
-            for k, v in updates.items(): setattr(call, k, v)
+            for k, v in updates.items():
+                setattr(call, k, v)
             db.commit()
     except Exception:
-        db.rollback(); logger.exception("NOMOS_WS_ERROR failed_to_update_call call_id=%s", call_id)
+        db.rollback()
+        logger.exception("NOMOS_WS_ERROR failed_to_update_call call_id=%s", call_id)
     finally:
         db.close()
 
@@ -68,140 +87,308 @@ def _settings_snapshot() -> dict[str, Any]:
             "stt_enabled": False if safe else _bool_setting(ss.get("stt_enabled", "false")),
             "agent_enabled": False if safe else _bool_setting(ss.get("agent_enabled", "false")),
             "tts_enabled": False if safe else _bool_setting(ss.get("tts_enabled", "false")),
-            "twilio_max_call_duration": int(ss.get("twilio_max_call_duration", "600") or 600),
+            "twilio_max_call_duration": _int_setting(ss.get("twilio_max_call_duration", "600"), 600),
+            "max_spoken_response_chars": _int_setting(ss.get("max_spoken_response_chars", "220"), 220),
+            "stt_flush_bytes": _int_setting(ss.get("stt_flush_bytes", "12000"), 12000),
+            "stt_flush_seconds": _float_setting(ss.get("stt_flush_seconds", "2.0"), 2.0),
+            "outbound_audio_queue_max": _int_setting(ss.get("outbound_audio_queue_max", "200"), 200),
+            "barge_in_enabled": _bool_setting(ss.get("barge_in_enabled", "false"), False),
         }
     except Exception:
         logger.exception("NOMOS_WS_ERROR failed_to_load_settings")
-        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600}
+        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 220, "stt_flush_bytes": 12000, "stt_flush_seconds": 2.0, "outbound_audio_queue_max": 200, "barge_in_enabled": False}
     finally:
         db.close()
 
 
-async def _send_twilio_audio(ws: WebSocket, call_id: int, stream_sid: str, audio: bytes, chunk_size: int = 160) -> None:
-    chunks = [audio[i:i+chunk_size] for i in range(0, len(audio), chunk_size) if audio[i:i+chunk_size]]
+async def safe_send_json(ws: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await ws.send_json(payload)
+        return True
+    except WebSocketDisconnect:
+        logger.warning("NOMOS_SAFE_SEND_DISCONNECTED")
+        return False
+    except RuntimeError as e:
+        logger.warning("NOMOS_SAFE_SEND_RUNTIME_ERROR error=%s", e)
+        return False
+    except Exception:
+        logger.exception("NOMOS_SAFE_SEND_ERROR")
+        return False
+
+
+def _is_invalid_transcript(text: str | None) -> bool:
+    cleaned = (text or "").strip()
+    lowered = cleaned.lower()
+    return not cleaned or lowered in INVALID_TRANSCRIPTS or lowered.strip(" .!?") in INVALID_TRANSCRIPTS
+
+
+def _shorten_response(text: str, max_chars: int) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= max_chars:
+        return text
+    shortened = text[:max_chars].rsplit(" ", 1)[0].strip()
+    return (shortened or text[:max_chars]).rstrip(".,;:") + "…"
+
+
+def _clear_queue(queue: asyncio.Queue[bytes]) -> int:
+    cleared = 0
+    while True:
+        try:
+            queue.get_nowait()
+            queue.task_done()
+            cleared += 1
+        except asyncio.QueueEmpty:
+            return cleared
+
+
+async def queue_twilio_audio(call_id: int, queue: asyncio.Queue[bytes], audio: bytes, chunk_size: int = 160) -> None:
+    chunks = [audio[i:i + chunk_size] for i in range(0, len(audio), chunk_size) if audio[i:i + chunk_size]]
+    if not chunks:
+        return
+    if queue.qsize() + len(chunks) > queue.maxsize:
+        dropped = _clear_queue(queue)
+        logger.warning("NOMOS_AUDIO_QUEUE_BACKPRESSURE call_id=%s dropped=%s pending_chunks=%s new_chunks=%s", call_id, dropped, queue.qsize(), len(chunks))
+        _write_event(call_id, "audio_queue_backpressure", {"dropped": dropped, "chunks": len(chunks)})
     for chunk in chunks:
-        await ws.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": base64.b64encode(chunk).decode("ascii")}})
-        await asyncio.sleep(0.02 if chunk_size == 160 else 0.04)
-    logger.warning("NOMOS_TWILIO_AUDIO_SENT bytes=%s chunks=%s", len(audio), len(chunks))
-    _write_event(call_id, "twilio_audio_sent", {"streamSid": stream_sid, "bytes": len(audio), "chunks": len(chunks)})
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            logger.warning("NOMOS_AUDIO_QUEUE_BACKPRESSURE call_id=%s action=skip_new_response", call_id)
+            _write_event(call_id, "audio_queue_backpressure", {"action": "skip_new_response"})
+            return
+    logger.warning("NOMOS_AUDIO_QUEUE_PUT bytes=%s chunks=%s", len(audio), len(chunks))
+    _write_event(call_id, "twilio_audio_queued", {"bytes": len(audio), "chunks": len(chunks)})
+
+
+async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | None], queue: asyncio.Queue[bytes], stop_event: asyncio.Event, call_id: int) -> None:
+    logger.warning("NOMOS_AUDIO_SENDER_STARTED call_id=%s", call_id)
+    chunk_index = 0
+    try:
+        while not stop_event.is_set():
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            stream_sid = stream_sid_ref.get("stream_sid")
+            if not stream_sid:
+                queue.task_done()
+                continue
+            ok = await safe_send_json(ws, {"event": "media", "streamSid": stream_sid, "media": {"payload": base64.b64encode(chunk).decode("ascii")}})
+            queue.task_done()
+            if not ok:
+                logger.warning("NOMOS_AUDIO_SEND_DISCONNECTED call_id=%s", call_id)
+                stop_event.set()
+                break
+            chunk_index += 1
+            logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s", chunk_index)
+            await asyncio.sleep(0.02)
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("NOMOS_AUDIO_SEND_ERROR call_id=%s", call_id)
+        stop_event.set()
+    finally:
+        logger.warning("NOMOS_AUDIO_SENDER_STOPPED call_id=%s", call_id)
 
 
 async def send_test_greeting(call_id: int) -> bool:
     session = ACTIVE_TWILIO_SESSIONS.get(call_id)
     if not session or not session.get("stream_sid"):
         return False
-    await _speak_text(session["ws"], call_id, session["stream_sid"], GREETING, "de-DE")
+    asyncio.create_task(_speak_text(call_id, GREETING, "de-DE", session["outbound_audio_queue"]))
     return True
 
 
-async def _speak_text(ws: WebSocket, call_id: int, stream_sid: str, text: str, language: str = "de-DE") -> None:
-    logger.warning("NOMOS_TTS_START text_len=%s", len(text)); _write_event(call_id, "tts_started", {"text_len": len(text)})
+async def _speak_text(call_id: int, text: str, language: str, queue: asyncio.Queue[bytes]) -> None:
+    logger.warning("NOMOS_TTS_START text_len=%s", len(text))
+    _write_event(call_id, "tts_started", {"text_len": len(text)})
     db = SessionLocal()
     try:
         audio = await ElevenLabsService(SettingsService(db, get_settings().app_encryption_key)).text_to_twilio_audio(text, language)
     finally:
         db.close()
-    logger.warning("NOMOS_TTS_BYTES bytes=%s", len(audio)); _write_event(call_id, "tts_completed", {"bytes": len(audio)})
-    await _send_twilio_audio(ws, call_id, stream_sid, audio)
+    logger.warning("NOMOS_TTS_BYTES bytes=%s", len(audio))
+    _write_event(call_id, "tts_completed", {"bytes": len(audio)})
+    await queue_twilio_audio(call_id, queue, audio)
 
 
-async def _process_buffer(ws: WebSocket, call_id: int, stream_sid: str | None, audio: bytes) -> None:
-    settings = _settings_snapshot()
-    if settings["voice_safe_mode"]:
-        logger.warning("NOMOS_STT_DISABLED call_id=%s voice_safe_mode=true", call_id); return
-    if not settings["stt_enabled"]:
-        logger.warning("NOMOS_STT_DISABLED call_id=%s stt_enabled=false", call_id); return
-    logger.warning("NOMOS_STT_START bytes=%s", len(audio)); _write_event(call_id, "stt_started", {"bytes": len(audio)})
-    transcript_text = None; language = None
+async def _process_buffer(call_id: int, stream_sid: str | None, audio: bytes, queue: asyncio.Queue[bytes], processing_lock: asyncio.Lock) -> None:
+    logger.warning("NOMOS_PROCESS_TASK_STARTED call_id=%s bytes=%s", call_id, len(audio))
     try:
-        db = SessionLocal()
-        try:
-            ss = SettingsService(db, get_settings().app_encryption_key)
-            transcript_text = await ElevenLabsService(ss).transcribe_chunk(audio)
-            logger.warning("NOMOS_STT_RESULT text=%s", transcript_text or "")
-            _write_event(call_id, "stt_completed", {"text": transcript_text or ""})
-            call = db.get(Call, call_id)
-            if transcript_text and call:
-                language = detect_language(transcript_text) if call.case.language_mode == "auto" else call.active_language or call.case.preferred_language
-                call.active_language = language
-                speaker = "ivr" if is_ivr(transcript_text) else "operator"
-                db.add(CallTranscript(call_id=call_id, speaker=speaker, text=transcript_text, language=language, confidence=0.8)); db.commit()
-        finally:
-            db.close()
+        async with processing_lock:
+            settings = _settings_snapshot()
+            if settings["voice_safe_mode"] or not settings["stt_enabled"]:
+                logger.warning("NOMOS_STT_DISABLED call_id=%s voice_safe_mode=%s stt_enabled=%s", call_id, settings["voice_safe_mode"], settings["stt_enabled"])
+                return
+            logger.warning("NOMOS_STT_START bytes=%s", len(audio))
+            _write_event(call_id, "stt_started", {"bytes": len(audio)})
+            transcript_text = None
+            language = None
+            try:
+                db = SessionLocal()
+                try:
+                    ss = SettingsService(db, get_settings().app_encryption_key)
+                    call = db.get(Call, call_id)
+                    active_language = call.active_language if call else None
+                    transcript_text = await ElevenLabsService(ss).transcribe_chunk(audio, language_code=active_language)
+                    logger.warning("NOMOS_STT_RESULT text=%s", transcript_text or "")
+                    _write_event(call_id, "stt_completed", {"text": transcript_text or ""})
+                    if _is_invalid_transcript(transcript_text):
+                        logger.warning("NOMOS_STT_INVALID_TRANSCRIPT call_id=%s text=%s", call_id, transcript_text or "")
+                        logger.warning("NOMOS_AGENT_SKIPPED_INVALID_TRANSCRIPT call_id=%s", call_id)
+                        _write_event(call_id, "stt_invalid_transcript", {"text": transcript_text or ""})
+                        return
+                    if call:
+                        language = detect_language(transcript_text) if call.case.language_mode == "auto" else call.active_language or call.case.preferred_language
+                        call.active_language = language
+                        speaker = "ivr" if is_ivr(transcript_text) else "operator"
+                        db.add(CallTranscript(call_id=call_id, speaker=speaker, text=transcript_text, language=language, confidence=0.8))
+                        db.commit()
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("NOMOS_PROCESS_TASK_ERROR stage=stt call_id=%s", call_id)
+                _write_event(call_id, "websocket_error", {"stage": "stt"})
+                return
+            digit = dtmf_for_ivr(transcript_text)
+            if digit and stream_sid:
+                logger.warning("NOMOS_DTMF_SKIPPED_BACKGROUND_SEND digit=%s", digit)
+                return
+            if not settings["agent_enabled"]:
+                return
+            logger.warning("NOMOS_AGENT_START")
+            _write_event(call_id, "agent_started", {"text": transcript_text})
+            response = None
+            try:
+                db = SessionLocal()
+                try:
+                    call = db.get(Call, call_id)
+                    if call:
+                        ss = SettingsService(db, get_settings().app_encryption_key)
+                        response = await OpenAIAgentService(ss).respond(call.case, transcript_text, language or call.active_language or "de-DE")
+                        response = _shorten_response(response or "", settings["max_spoken_response_chars"])
+                        db.add(CallTranscript(call_id=call_id, speaker="agent", text=response, language=language or call.active_language))
+                        db.commit()
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("NOMOS_PROCESS_TASK_ERROR stage=agent call_id=%s", call_id)
+                _write_event(call_id, "websocket_error", {"stage": "agent"})
+                return
+            logger.warning("NOMOS_AGENT_RESPONSE text=%s", response or "")
+            _write_event(call_id, "agent_completed", {"text": response or ""})
+            if response and settings["tts_enabled"] and not settings["text_debug_mode"] and stream_sid:
+                await _speak_text(call_id, response, language or "de-DE", queue)
     except Exception:
-        logger.exception("NOMOS_WS_ERROR stage=stt call_id=%s", call_id); _write_event(call_id, "websocket_error", {"stage": "stt"}); return
-    if not transcript_text:
-        logger.warning("NOMOS_STT_RESULT_EMPTY call_id=%s", call_id); return
-    digit = dtmf_for_ivr(transcript_text)
-    if digit and stream_sid:
-        await ws.send_json({"event": "dtmf", "streamSid": stream_sid, "dtmf": {"digits": digit}}); _write_event(call_id, "dtmf_sent", {"digit": digit}); return
-    if not settings["agent_enabled"]: return
-    logger.warning("NOMOS_AGENT_START"); _write_event(call_id, "agent_started", {"text": transcript_text})
-    response = None
-    try:
-        db = SessionLocal()
-        try:
-            call = db.get(Call, call_id)
-            if call:
-                ss = SettingsService(db, get_settings().app_encryption_key)
-                response = await OpenAIAgentService(ss).respond(call.case, transcript_text, language or call.active_language or "de-DE")
-                db.add(CallTranscript(call_id=call_id, speaker="agent", text=response, language=language or call.active_language)); db.commit()
-        finally: db.close()
-    except Exception:
-        logger.exception("NOMOS_WS_ERROR stage=agent call_id=%s", call_id); _write_event(call_id, "websocket_error", {"stage": "agent"}); return
-    logger.warning("NOMOS_AGENT_RESPONSE text=%s", response or ""); _write_event(call_id, "agent_completed", {"text": response or ""})
-    if response and settings["tts_enabled"] and not settings["text_debug_mode"] and stream_sid:
-        await _speak_text(ws, call_id, stream_sid, response, language or "de-DE")
+        logger.exception("NOMOS_PROCESS_TASK_ERROR call_id=%s", call_id)
+    finally:
+        logger.warning("NOMOS_PROCESS_TASK_FINISHED call_id=%s", call_id)
 
 
 @router.websocket("/ws/twilio-media/{call_id}")
 async def media(ws: WebSocket, call_id: int):
-    await ws.accept(); started = time.time(); stream_sid = None; buffer = bytearray(); last_flush = time.time(); disconnected = False
+    await ws.accept()
+    started = time.time()
+    stream_sid_ref: dict[str, str | None] = {"stream_sid": None}
+    buffer = bytearray()
+    last_flush = time.time()
+    connected = True
+    stop_event = asyncio.Event()
+    processing_lock = asyncio.Lock()
+    processing_tasks: set[asyncio.Task] = set()
     settings = _settings_snapshot()
-    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None}
-    logger.warning("NOMOS_WS_CONNECTED call_id=%s", call_id); _write_event(call_id, "websocket_connected", {"voice_safe_mode": settings["voice_safe_mode"]})
+    outbound_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=settings["outbound_audio_queue_max"])
+    sender_task = asyncio.create_task(twilio_audio_sender(ws, stream_sid_ref, outbound_audio_queue, stop_event, call_id))
+    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None, "outbound_audio_queue": outbound_audio_queue}
+    logger.warning("NOMOS_WS_CONNECTED call_id=%s", call_id)
+    logger.warning("NOMOS_RECEIVE_LOOP_STARTED call_id=%s", call_id)
+    _write_event(call_id, "websocket_connected", {"voice_safe_mode": settings["voice_safe_mode"]})
     try:
-        while True:
-            try: raw = await ws.receive_text()
+        while connected and not stop_event.is_set():
+            try:
+                raw = await ws.receive_text()
             except WebSocketDisconnect:
-                disconnected=True; logger.warning("NOMOS_WS_STOP call_id=%s disconnected=true", call_id); _write_event(call_id, "websocket_disconnected", {}); break
-            try: msg = json.loads(raw)
+                connected = False
+                stop_event.set()
+                logger.warning("NOMOS_WS_STOP call_id=%s disconnected=true", call_id)
+                _write_event(call_id, "websocket_disconnected", {})
+                break
+            try:
+                msg = json.loads(raw)
             except json.JSONDecodeError:
-                logger.exception("NOMOS_WS_ERROR call_id=%s stage=json_parse raw=%s", call_id, _safe_raw(raw)); _write_event(call_id, "websocket_error", {"stage":"json_parse","raw":_safe_raw(raw)}); continue
-            event = msg.get("event"); logger.warning("NOMOS_WS_RAW event=%s", event)
+                logger.exception("NOMOS_WS_ERROR call_id=%s stage=json_parse raw=%s", call_id, _safe_raw(raw))
+                _write_event(call_id, "websocket_error", {"stage": "json_parse", "raw": _safe_raw(raw)})
+                continue
+            event = msg.get("event")
+            logger.warning("NOMOS_WS_RAW event=%s", event)
             try:
                 if event == "connected":
                     _write_event(call_id, "twilio_connected_received", {})
                 elif event == "start":
-                    start = msg.get("start") or {}; stream_sid = start.get("streamSid") or msg.get("streamSid"); call_sid = start.get("callSid")
+                    start = msg.get("start") or {}
+                    stream_sid = start.get("streamSid") or msg.get("streamSid")
+                    call_sid = start.get("callSid")
+                    stream_sid_ref["stream_sid"] = stream_sid
                     ACTIVE_TWILIO_SESSIONS[call_id]["stream_sid"] = stream_sid
                     payload = {"streamSid": stream_sid, "callSid": call_sid, "accountSid": start.get("accountSid"), "customParameters": start.get("customParameters") or {}}
-                    logger.warning("NOMOS_TWILIO_START streamSid=%s callSid=%s", stream_sid, call_sid); _write_event(call_id, "twilio_start_received", payload)
-                    if call_sid: _update_call(call_id, twilio_call_sid=call_sid, status="in_progress", started_at=datetime.utcnow())
+                    logger.warning("NOMOS_TWILIO_START streamSid=%s callSid=%s", stream_sid, call_sid)
+                    _write_event(call_id, "twilio_start_received", payload)
+                    if call_sid:
+                        _update_call(call_id, twilio_call_sid=call_sid, status="in_progress", started_at=datetime.utcnow())
                     if stream_sid and settings["greeting_on_start_enabled"] and (not settings["voice_safe_mode"] or settings["allow_greeting_in_safe_mode"]):
-                        await _speak_text(ws, call_id, stream_sid, GREETING, "de-DE")
+                        task = asyncio.create_task(_speak_text(call_id, GREETING, "de-DE", outbound_audio_queue))
+                        processing_tasks.add(task)
+                        task.add_done_callback(processing_tasks.discard)
                 elif event == "media":
-                    mp = msg.get("media") or {}; payload = mp.get("payload") or ""; chunk = mp.get("chunk"); timestamp = mp.get("timestamp")
+                    mp = msg.get("media") or {}
+                    payload = mp.get("payload") or ""
+                    chunk = mp.get("chunk")
+                    timestamp = mp.get("timestamp")
                     audio = base64.b64decode(payload, validate=True) if payload else b""
-                    logger.warning("NOMOS_TWILIO_MEDIA chunk=%s timestamp=%s bytes=%s", chunk, timestamp, len(audio)); _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid})
-                    buffer.extend(audio); logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
-                    if len(buffer) >= 12000 or (buffer and time.time() - last_flush >= 2.0):
-                        flushed = bytes(buffer); buffer.clear(); last_flush = time.time(); logger.warning("NOMOS_STT_FLUSH bytes=%s", len(flushed)); await _process_buffer(ws, call_id, stream_sid, flushed)
+                    if settings["barge_in_enabled"] and not outbound_audio_queue.empty():
+                        cleared = _clear_queue(outbound_audio_queue)
+                        logger.warning("NOMOS_BARGE_IN_CLEAR_AUDIO call_id=%s cleared=%s", call_id, cleared)
+                    logger.warning("NOMOS_TWILIO_MEDIA chunk=%s timestamp=%s bytes=%s", chunk, timestamp, len(audio))
+                    _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid")})
+                    buffer.extend(audio)
+                    logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
+                    if len(buffer) >= settings["stt_flush_bytes"] or (buffer and time.time() - last_flush >= settings["stt_flush_seconds"]):
+                        if processing_lock.locked():
+                            logger.warning("NOMOS_STT_FLUSH_SKIPPED_PROCESSING_BUSY bytes=%s", len(buffer))
+                        else:
+                            flushed = bytes(buffer)
+                            buffer.clear()
+                            last_flush = time.time()
+                            logger.warning("NOMOS_STT_FLUSH bytes=%s", len(flushed))
+                            task = asyncio.create_task(_process_buffer(call_id, stream_sid_ref.get("stream_sid"), flushed, outbound_audio_queue, processing_lock))
+                            processing_tasks.add(task)
+                            task.add_done_callback(processing_tasks.discard)
                 elif event == "mark":
                     _write_event(call_id, "twilio_mark_received", {"mark": msg.get("mark")})
                 elif event == "dtmf":
                     _write_event(call_id, "twilio_dtmf_received", {"dtmf": msg.get("dtmf")})
                 elif event == "stop":
-                    logger.warning("NOMOS_WS_STOP call_id=%s", call_id); _write_event(call_id, "twilio_stop_received", {"streamSid": msg.get("streamSid") or stream_sid, "stop": msg.get("stop") or {}}); _update_call(call_id, status="completed", ended_at=datetime.utcnow()); break
+                    logger.warning("NOMOS_WS_STOP call_id=%s", call_id)
+                    _write_event(call_id, "twilio_stop_received", {"streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid"), "stop": msg.get("stop") or {}})
+                    _update_call(call_id, status="completed", ended_at=datetime.utcnow())
+                    break
                 else:
                     _write_event(call_id, "unknown_twilio_event", {"event": event})
             except Exception:
-                logger.exception("NOMOS_WS_ERROR call_id=%s stage=event_processing", call_id); _write_event(call_id, "websocket_error", {"stage":"event_processing", "event": event})
+                logger.exception("NOMOS_WS_ERROR call_id=%s stage=event_processing", call_id)
+                _write_event(call_id, "websocket_error", {"stage": "event_processing", "event": event})
             if time.time() - started > settings["twilio_max_call_duration"]:
-                _write_event(call_id, "twilio_stop_received", {"reason":"max_duration"}); break
+                _write_event(call_id, "twilio_stop_received", {"reason": "max_duration"})
+                break
     finally:
+        logger.warning("NOMOS_RECEIVE_LOOP_STOPPED call_id=%s", call_id)
+        stop_event.set()
+        sender_task.cancel()
+        await asyncio.gather(sender_task, return_exceptions=True)
+        for task in processing_tasks:
+            task.cancel()
+        if processing_tasks:
+            await asyncio.gather(*processing_tasks, return_exceptions=True)
         ACTIVE_TWILIO_SESSIONS.pop(call_id, None)
-        if not disconnected: _write_event(call_id, "websocket_disconnected", {})
-        if ws.client_state != WebSocketState.DISCONNECTED:
-            try: await ws.close()
-            except Exception: logger.exception("NOMOS_WS_ERROR call_id=%s stage=close", call_id)
+        if connected:
+            _write_event(call_id, "websocket_disconnected", {})
