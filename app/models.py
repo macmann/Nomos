@@ -118,7 +118,7 @@ class CallExtraction(Base, TimestampMixin):
     outcome: Mapped[str | None] = mapped_column(String(60)); root_cause: Mapped[str | None] = mapped_column(Text)
     market_location_number: Mapped[str | None] = mapped_column(String(120)); original_market_location_number: Mapped[str | None] = mapped_column(String(120)); corrected_market_location_number: Mapped[str | None] = mapped_column(String(120))
     meter_number: Mapped[str | None] = mapped_column(String(120)); meter_status: Mapped[str | None] = mapped_column(String(60))
-    meter_inactive_reason: Mapped[str | None] = mapped_column(Text); temporary_meter: Mapped[bool | None] = mapped_column(Boolean); customer_contact_required: Mapped[bool | None] = mapped_column(Boolean)
+    meter_inactive_reason: Mapped[str | None] = mapped_column(Text); temporary_meter: Mapped[bool | None] = mapped_column(Boolean); construction_meter: Mapped[bool | None] = mapped_column(Boolean); customer_contact_required: Mapped[bool | None] = mapped_column(Boolean)
     reference_number: Mapped[str | None] = mapped_column(String(120)); registration_status: Mapped[str | None] = mapped_column(String(60))
     next_action: Mapped[str] = mapped_column(String(80), default="none")
     plain_language_note: Mapped[str | None] = mapped_column(Text)

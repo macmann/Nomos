@@ -19,7 +19,10 @@ def page(request:Request, db:Session=Depends(get_db), admin=Depends(current_admi
 @router.post('/settings')
 async def save(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     form=await request.form(); ss=SettingsService(db,get_settings().app_encryption_key)
-    for k,v in form.items(): ss.set(k, str(v), k in SECRET_KEYS)
+    allowed_keys = {key for keys in SECTIONS.values() for key in keys}
+    for k,v in form.items():
+        if k in allowed_keys:
+            ss.set(k, str(v), k in SECRET_KEYS)
     return RedirectResponse('/settings',303)
 @router.post('/settings/test/openai')
 async def test_openai(db:Session=Depends(get_db), admin=Depends(current_admin)):

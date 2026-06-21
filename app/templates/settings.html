@@ -1,6 +1,58 @@
 {% extends 'base.html' %}
 {% block content %}
-<form method="post" action="/settings" class="stack">
-  {% for section, keys in sections.items() %}<section class="card"><h2>{{ section }}</h2><div class="grid grid-2">{% for k in keys %}<label>{{ 'Voice Safe Mode' if k == 'voice_safe_mode' else k|replace('_',' ')|title }}{% if 'template' in k or 'prompt' in k or 'disclosure' in k %}<textarea name="{{ k }}">{{ values.get(k,'') }}</textarea>{% else %}<input name="{{ k }}" value="{{ values.get(k,'') }}">{% endif %}{% if help_text and help_text.get(k) %}<span class="muted">{{ help_text.get(k) }}</span>{% endif %}</label>{% endfor %}</div><div class="toolbar section-spaced"><button class="button-primary" formaction="/settings" type="submit">Save {{ section }}</button><button type="button" hx-post="/settings/test/{{ tests[section] }}" hx-target="#test-{{ tests[section] }}">Test connection</button><span id="test-{{ tests[section] }}" class="alert-inline"></span></div></section>{% endfor %}
+<form method="post" action="/settings" class="stack settings-form">
+  <div class="settings-tabs card">
+    {% for section, keys in sections.items() %}
+      <input
+        class="settings-tab-input"
+        type="radio"
+        id="settings-tab-{{ loop.index }}"
+        name="settings-tab"
+        {% if loop.first %}checked{% endif %}
+      >
+    {% endfor %}
+
+    <div class="settings-tab-list" role="tablist" aria-label="Settings sections">
+      {% for section, keys in sections.items() %}
+        <label class="settings-tab-label" for="settings-tab-{{ loop.index }}" role="tab">
+          {{ section }}
+        </label>
+      {% endfor %}
+    </div>
+
+    <div class="settings-tab-panels">
+      {% for section, keys in sections.items() %}
+        <section class="settings-tab-panel" aria-labelledby="settings-tab-{{ loop.index }}">
+          <div class="settings-section-header">
+            <div>
+              <p class="eyebrow settings-eyebrow">Configure</p>
+              <h2>{{ section }}</h2>
+            </div>
+            <div class="toolbar settings-section-actions">
+              <button class="button-primary" formaction="/settings" type="submit">Save {{ section }}</button>
+              <button type="button" hx-post="/settings/test/{{ tests[section] }}" hx-target="#test-{{ tests[section] }}">Test connection</button>
+              <span id="test-{{ tests[section] }}" class="alert-inline"></span>
+            </div>
+          </div>
+
+          <div class="grid grid-2">
+            {% for k in keys %}
+              <label>
+                {{ 'Voice Safe Mode' if k == 'voice_safe_mode' else k|replace('_',' ')|title }}
+                {% if 'template' in k or 'prompt' in k or 'disclosure' in k %}
+                  <textarea name="{{ k }}">{{ values.get(k,'') }}</textarea>
+                {% else %}
+                  <input name="{{ k }}" value="{{ values.get(k,'') }}">
+                {% endif %}
+                {% if help_text and help_text.get(k) %}
+                  <span class="muted">{{ help_text.get(k) }}</span>
+                {% endif %}
+              </label>
+            {% endfor %}
+          </div>
+        </section>
+      {% endfor %}
+    </div>
+  </div>
 </form>
 {% endblock %}

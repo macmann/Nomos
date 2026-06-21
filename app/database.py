@@ -42,6 +42,7 @@ def init_db() -> None:
                 "original_market_location_number": "VARCHAR(120)",
                 "meter_inactive_reason": "TEXT",
                 "temporary_meter": "BOOLEAN",
+                "construction_meter": "BOOLEAN",
                 "customer_contact_required": "BOOLEAN",
             }.items():
                 if col not in extraction_cols:
@@ -56,6 +57,7 @@ def init_db() -> None:
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS original_market_location_number VARCHAR(120)")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS meter_inactive_reason TEXT")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS temporary_meter BOOLEAN")
+            conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS construction_meter BOOLEAN")
             conn.exec_driver_sql("ALTER TABLE call_extractions ADD COLUMN IF NOT EXISTS customer_contact_required BOOLEAN")
 
 def get_db() -> Generator[Session, None, None]:
