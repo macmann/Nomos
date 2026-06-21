@@ -49,7 +49,7 @@ MEDIA_EVENT_SAMPLE_CHUNKS = 50
 OUTBOUND_CHUNK_EVENT_SAMPLE_CHUNKS = 50
 MIN_STT_AUDIO_BYTES = 16000
 DEFAULT_STT_FLUSH_BYTES = 32000
-DEFAULT_STT_FLUSH_SECONDS = 4.0
+DEFAULT_STT_FLUSH_SECONDS = 2.0
 DEFAULT_STT_AFTER_BOT_COOLDOWN_MS = 500
 DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX = 1
 DEFAULT_MAX_PENDING_TTS_RESPONSES = 1
@@ -234,11 +234,12 @@ def _twilio_mulaw_rms(audio: bytes) -> int:
         return 0
 
 
-def _vad_update(vad_state: dict[str, Any], audio: bytes, settings: dict[str, Any]) -> tuple[bool, bool, int]:
-    """Update simple energy VAD; return (is_speech_chunk, speech_started, rms)."""
+def _vad_update(vad_state: dict[str, Any], audio: bytes, settings: dict[str, Any]) -> tuple[bool, bool, bool, int]:
+    """Update simple energy VAD; return (is_speech_chunk, speech_started, speech_ended, rms)."""
     rms = _twilio_mulaw_rms(audio)
     is_speech = rms >= settings.get("vad_energy_threshold", DEFAULT_VAD_ENERGY_THRESHOLD)
     now = time.monotonic()
+    speech_ended = False
     if is_speech:
         vad_state["speech_chunks"] = vad_state.get("speech_chunks", 0) + 1
         vad_state["last_speech_at"] = now
@@ -247,11 +248,12 @@ def _vad_update(vad_state: dict[str, Any], audio: bytes, settings: dict[str, Any
         silence_seconds = settings.get("vad_silence_end_ms", DEFAULT_VAD_SILENCE_END_MS) / 1000
         if vad_state.get("in_speech") and now - vad_state.get("last_speech_at", now) >= silence_seconds:
             vad_state["in_speech"] = False
+            speech_ended = True
     speech_started = False
     if not vad_state.get("in_speech") and vad_state.get("speech_chunks", 0) >= settings.get("vad_speech_start_chunks", DEFAULT_VAD_SPEECH_START_CHUNKS):
         vad_state["in_speech"] = True
         speech_started = True
-    return is_speech, speech_started, rms
+    return is_speech, speech_started, speech_ended, rms
 
 
 async def _interrupt_twilio_playback(
@@ -665,9 +667,10 @@ async def media(ws: WebSocket, call_id: int):
                     audio = base64.b64decode(payload, validate=True) if payload else b""
                     is_speech_chunk = True
                     speech_started = False
+                    speech_ended = False
                     vad_rms = 0
                     if settings.get("vad_enabled", True):
-                        is_speech_chunk, speech_started, vad_rms = _vad_update(vad_state, audio, settings)
+                        is_speech_chunk, speech_started, speech_ended, vad_rms = _vad_update(vad_state, audio, settings)
                     if settings["barge_in_enabled"] and speech_started and (bot_is_speaking.is_set() or not outbound_audio_queue.empty()):
                         await _interrupt_twilio_playback(ws, stream_sid_ref, outbound_audio_queue, bot_is_speaking, playback_interrupt, stt_cooldown_until, voice_stats, call_id, "caller_speech_detected")
                     media_chunk_count += 1
@@ -700,7 +703,8 @@ async def media(ws: WebSocket, call_id: int):
                     buffer.extend(audio)
                     if should_sample_media:
                         logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
-                    if len(buffer) >= settings["stt_flush_bytes"] or (buffer and time.time() - last_flush >= settings["stt_flush_seconds"]):
+                    vad_end_flush = bool(speech_ended and len(buffer) >= settings.get("min_stt_buffer_bytes", MIN_STT_AUDIO_BYTES))
+                    if vad_end_flush or len(buffer) >= settings["stt_flush_bytes"] or (buffer and time.time() - last_flush >= settings["stt_flush_seconds"]):
                         if len(buffer) < settings.get("min_stt_buffer_bytes", MIN_STT_AUDIO_BYTES):
                             last_flush = time.time()
                             logger.warning("NOMOS_STT_SKIP_SMALL_BUFFER bytes=%s", len(buffer))
@@ -710,7 +714,9 @@ async def media(ws: WebSocket, call_id: int):
                             flushed = bytes(buffer)
                             buffer.clear()
                             last_flush = time.time()
-                            logger.warning("NOMOS_STT_FLUSH bytes=%s", len(flushed))
+                            flush_reason = "vad_speech_ended" if vad_end_flush else ("size" if len(flushed) >= settings["stt_flush_bytes"] else "timer")
+                            logger.warning("NOMOS_STT_FLUSH bytes=%s reason=%s", len(flushed), flush_reason)
+                            _write_event(call_id, "stt_flush", {"bytes": len(flushed), "reason": flush_reason})
                             task = asyncio.create_task(_process_buffer(call_id, stream_sid_ref.get("stream_sid"), flushed, outbound_audio_queue, processing_lock, voice_stats))
                             processing_tasks.add(task)
                             task.add_done_callback(processing_tasks.discard)
