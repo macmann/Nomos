@@ -44,5 +44,43 @@
       </section>
     </main>
   </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var transcriptScroll = { top: 0, shouldStick: true };
+
+      document.body.addEventListener('htmx:beforeSwap', function (event) {
+        var transcript = event.target && event.target.matches && event.target.matches('#live-transcript')
+          ? event.target
+          : null;
+        if (!transcript) return;
+
+        var feed = transcript.querySelector('.transcript-feed');
+        if (!feed) return;
+
+        var distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+        transcriptScroll = {
+          top: feed.scrollTop,
+          shouldStick: distanceFromBottom < 48
+        };
+      });
+
+      document.body.addEventListener('htmx:afterSwap', function (event) {
+        var transcript = event.target && event.target.matches && event.target.matches('#live-transcript')
+          ? event.target
+          : null;
+        if (!transcript) return;
+
+        var feed = transcript.querySelector('.transcript-feed');
+        if (!feed) return;
+
+        if (transcriptScroll.shouldStick) {
+          feed.scrollTop = feed.scrollHeight;
+        } else {
+          feed.scrollTop = transcriptScroll.top;
+        }
+      });
+    });
+  </script>
 </body>
 </html>
