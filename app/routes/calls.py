@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import ActionRun, Call, CallEvent, CallExtraction, CallTranscript, Case
 from app.security import current_admin
-from app.services.openai_agent_service import OpenAIAgentService
+from app.services.call_extraction_service import extract_call_result
 from app.services.twilio_service import TwilioService
 from app.services.scenario_templates import scenario_label
 from app.routes.websocket import ACTIVE_TWILIO_SESSIONS, is_valid_user_transcript, send_test_greeting
@@ -96,8 +96,8 @@ async def debug_send_greeting(call_id:int, db:Session=Depends(get_db), admin=Dep
 async def extract(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
     call=db.get(Call,call_id)
     if not call: raise HTTPException(status_code=404, detail='Call not found')
-    ss=SettingsService(db,get_settings().app_encryption_key); data=await OpenAIAgentService(ss).extract(call.case, db.query(CallTranscript).filter_by(call_id=call_id).all(), db.query(CallEvent).filter_by(call_id=call_id).all())
-    ex=CallExtraction(call_id=call.id, case_id=call.case_id, extracted_json=data, **data); db.add(ex); db.commit(); return 'Extraction saved'
+    extract_call_result(call_id)
+    return 'Extraction saved'
 @router.post('/calls/{call_id}/trigger-action')
 async def trigger(call_id:int, db:Session=Depends(get_db), admin=Depends(current_admin)):
     call=db.get(Call,call_id)

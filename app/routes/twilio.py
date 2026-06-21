@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import Call, CallEvent
 from app.services.twilio_service import TwilioService
+from app.services.call_extraction_service import extract_call_result
 from app.settings_service import SettingsService
 router=APIRouter()
 @router.post('/twilio/voice/{call_id}')
@@ -22,7 +23,13 @@ async def status(request:Request, db:Session=Depends(get_db)):
         if call.status in ['completed','failed','busy','no-answer','canceled']:
             call.ended_at=datetime.utcnow(); call.duration_seconds=int(form.get('CallDuration') or 0)
         if form.get('ErrorMessage'): call.error_message=form.get('ErrorMessage')
-        db.add(CallEvent(call_id=call.id,event_type='call_ended' if call.ended_at else 'call_started',event_payload=dict(form))); db.commit()
+        ended = bool(call.ended_at)
+        db.add(CallEvent(call_id=call.id,event_type='call_ended' if ended else 'call_started',event_payload=dict(form))); db.commit()
+        if ended:
+            try:
+                extract_call_result(call.id)
+            except Exception as exc:
+                db.add(CallEvent(call_id=call.id,event_type='extraction_failed',event_payload={'message': str(exc)})); db.commit()
     return Response('ok')
 @router.post('/twilio/recording')
 async def recording(request:Request, db:Session=Depends(get_db)):
