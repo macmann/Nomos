@@ -15,6 +15,7 @@ from app.models import Call, CallEvent, CallTranscript
 from app.services.elevenlabs_service import ElevenLabsService
 from app.services.language_service import detect_language, dtmf_for_ivr, is_ivr
 from app.services.openai_agent_service import OpenAIAgentService
+from app.services.twilio_service import audioop
 from app.services.call_extraction_service import extract_call_result
 from app.settings_service import SettingsService
 
@@ -53,6 +54,9 @@ DEFAULT_STT_AFTER_BOT_COOLDOWN_MS = 500
 DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX = 1
 DEFAULT_MAX_PENDING_TTS_RESPONSES = 1
 DEFAULT_BOT_SPEAKING_MAX_SECONDS = 10
+DEFAULT_VAD_ENERGY_THRESHOLD = 450
+DEFAULT_VAD_SPEECH_START_CHUNKS = 3
+DEFAULT_VAD_SILENCE_END_MS = 700
 
 
 def _bool_setting(value: Any, default: bool = False) -> bool:
@@ -128,6 +132,10 @@ def _settings_snapshot() -> dict[str, Any]:
             "outbound_audio_queue_max": max(1, _int_setting(ss.get("max_pending_tts_responses", ss.get("outbound_audio_queue_max", str(DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX))), DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX)),
             "bot_speaking_max_seconds": _float_setting(ss.get("bot_speaking_max_seconds", str(DEFAULT_BOT_SPEAKING_MAX_SECONDS)), DEFAULT_BOT_SPEAKING_MAX_SECONDS),
             "barge_in_enabled": _bool_setting(ss.get("barge_in_enabled", "false"), False),
+            "vad_enabled": _bool_setting(ss.get("vad_enabled", "true"), True),
+            "vad_energy_threshold": _int_setting(ss.get("vad_energy_threshold", str(DEFAULT_VAD_ENERGY_THRESHOLD)), DEFAULT_VAD_ENERGY_THRESHOLD),
+            "vad_speech_start_chunks": max(1, _int_setting(ss.get("vad_speech_start_chunks", str(DEFAULT_VAD_SPEECH_START_CHUNKS)), DEFAULT_VAD_SPEECH_START_CHUNKS)),
+            "vad_silence_end_ms": _int_setting(ss.get("vad_silence_end_ms", str(DEFAULT_VAD_SILENCE_END_MS)), DEFAULT_VAD_SILENCE_END_MS),
             "utterance_silence_ms": _int_setting(ss.get("utterance_silence_ms", "2200"), 2200),
             "min_meaningful_words": _int_setting(ss.get("min_meaningful_words", "3"), 3),
             "allow_partial_number_prompt": _bool_setting(ss.get("allow_partial_number_prompt", "true"), True),
@@ -135,7 +143,7 @@ def _settings_snapshot() -> dict[str, Any]:
         }
     except Exception:
         logger.exception("NOMOS_WS_ERROR failed_to_load_settings")
-        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 140, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "max_pending_tts_responses": DEFAULT_MAX_PENDING_TTS_RESPONSES, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False, "utterance_silence_ms": 2200, "min_meaningful_words": 3, "allow_partial_number_prompt": True}
+        return {"voice_safe_mode": True, "allow_greeting_in_safe_mode": False, "greeting_on_start_enabled": True, "text_debug_mode": False, "stt_enabled": False, "agent_enabled": False, "tts_enabled": False, "twilio_max_call_duration": 600, "max_spoken_response_chars": 140, "stt_flush_bytes": DEFAULT_STT_FLUSH_BYTES, "stt_flush_seconds": DEFAULT_STT_FLUSH_SECONDS, "min_stt_buffer_bytes": MIN_STT_AUDIO_BYTES, "stt_after_bot_cooldown_ms": DEFAULT_STT_AFTER_BOT_COOLDOWN_MS, "outbound_audio_queue_max": DEFAULT_OUTBOUND_AUDIO_QUEUE_MAX, "max_pending_tts_responses": DEFAULT_MAX_PENDING_TTS_RESPONSES, "bot_speaking_max_seconds": DEFAULT_BOT_SPEAKING_MAX_SECONDS, "barge_in_enabled": False, "vad_enabled": True, "vad_energy_threshold": DEFAULT_VAD_ENERGY_THRESHOLD, "vad_speech_start_chunks": DEFAULT_VAD_SPEECH_START_CHUNKS, "vad_silence_end_ms": DEFAULT_VAD_SILENCE_END_MS, "utterance_silence_ms": 2200, "min_meaningful_words": 3, "allow_partial_number_prompt": True}
     finally:
         db.close()
 
@@ -215,6 +223,61 @@ def _clear_queue(queue: asyncio.Queue[Any]) -> int:
             return cleared
 
 
+
+def _twilio_mulaw_rms(audio: bytes) -> int:
+    if not audio:
+        return 0
+    try:
+        return audioop.rms(audioop.ulaw2lin(audio, 2), 2)
+    except Exception:
+        logger.exception("NOMOS_VAD_RMS_ERROR")
+        return 0
+
+
+def _vad_update(vad_state: dict[str, Any], audio: bytes, settings: dict[str, Any]) -> tuple[bool, bool, int]:
+    """Update simple energy VAD; return (is_speech_chunk, speech_started, rms)."""
+    rms = _twilio_mulaw_rms(audio)
+    is_speech = rms >= settings.get("vad_energy_threshold", DEFAULT_VAD_ENERGY_THRESHOLD)
+    now = time.monotonic()
+    if is_speech:
+        vad_state["speech_chunks"] = vad_state.get("speech_chunks", 0) + 1
+        vad_state["last_speech_at"] = now
+    else:
+        vad_state["speech_chunks"] = 0
+        silence_seconds = settings.get("vad_silence_end_ms", DEFAULT_VAD_SILENCE_END_MS) / 1000
+        if vad_state.get("in_speech") and now - vad_state.get("last_speech_at", now) >= silence_seconds:
+            vad_state["in_speech"] = False
+    speech_started = False
+    if not vad_state.get("in_speech") and vad_state.get("speech_chunks", 0) >= settings.get("vad_speech_start_chunks", DEFAULT_VAD_SPEECH_START_CHUNKS):
+        vad_state["in_speech"] = True
+        speech_started = True
+    return is_speech, speech_started, rms
+
+
+async def _interrupt_twilio_playback(
+    ws: WebSocket,
+    stream_sid_ref: dict[str, str | None],
+    outbound_audio_queue: asyncio.Queue[dict[str, Any]],
+    bot_is_speaking: asyncio.Event,
+    interrupt_event: asyncio.Event,
+    stt_cooldown_until: dict[str, float],
+    voice_stats: dict[str, Any],
+    call_id: int,
+    reason: str,
+) -> None:
+    stream_sid = stream_sid_ref.get("stream_sid")
+    cleared = _clear_queue(outbound_audio_queue)
+    interrupt_event.set()
+    stt_cooldown_until["until"] = 0.0
+    voice_stats["barge_in_interrupts"] = voice_stats.get("barge_in_interrupts", 0) + 1
+    voice_stats["last_interrupt_reason"] = reason
+    if stream_sid:
+        await safe_send_json(ws, {"event": "clear", "streamSid": stream_sid})
+    if bot_is_speaking.is_set():
+        bot_is_speaking.clear()
+    logger.warning("NOMOS_BARGE_IN_INTERRUPT call_id=%s reason=%s cleared=%s streamSid=%s", call_id, reason, cleared, stream_sid)
+    _write_event(call_id, "barge_in_interrupt", {"reason": reason, "cleared_responses": cleared, "streamSid": stream_sid})
+
 async def _end_bot_speaking(
     call_id: int,
     bot_is_speaking: asyncio.Event,
@@ -280,7 +343,7 @@ async def queue_twilio_audio(
     return True
 
 
-async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | None], queue: asyncio.Queue[dict[str, Any]], stop_event: asyncio.Event, call_id: int, bot_is_speaking: asyncio.Event, cooldown_until_ref: dict[str, float], stats: dict[str, Any], cooldown_ms: int) -> None:
+async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | None], queue: asyncio.Queue[dict[str, Any]], stop_event: asyncio.Event, call_id: int, bot_is_speaking: asyncio.Event, cooldown_until_ref: dict[str, float], stats: dict[str, Any], cooldown_ms: int, interrupt_event: asyncio.Event) -> None:
     logger.warning("NOMOS_AUDIO_SENDER_STARTED call_id=%s", call_id)
     chunk_index = 0
     try:
@@ -303,6 +366,7 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                 if not chunks:
                     continue
                 response_chunk_total = len(chunks)
+                response_chunks_sent = 0
                 bot_is_speaking.set()
                 started_sending = True
                 now = datetime.utcnow().isoformat()
@@ -315,6 +379,10 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                     if stop_event.is_set():
                         reason = "disconnect"
                         break
+                    if interrupt_event.is_set():
+                        reason = "interrupted"
+                        interrupt_event.clear()
+                        break
                     delay = next_send_at - time.monotonic()
                     if delay > 0:
                         await asyncio.sleep(delay)
@@ -325,6 +393,7 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                         reason = "disconnect"
                         break
                     chunk_index += 1
+                    response_chunks_sent += 1
                     stats["tts_chunks_sent"] = stats.get("tts_chunks_sent", 0) + 1
                     send_lag = max(0.0, time.monotonic() - next_send_at)
                     delay_count = stats.get("chunk_send_delay_count", 0) + 1
@@ -350,8 +419,9 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                         logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s response_chunk_index=%s/%s", chunk_index, response_chunk_index, response_chunk_total)
                     next_send_at = time.monotonic() + TWILIO_AUDIO_CHUNK_SECONDS
                 stats["last_sender_send_duration"] = round(time.monotonic() - stats.get("bot_speaking_started_monotonic", time.monotonic()), 3)
-                _write_event(call_id, "twilio_audio_response_sent", {"chunks_sent": response_chunk_total, "total_chunks_sent": stats.get("tts_chunks_sent", 0), "send_duration": stats.get("last_sender_send_duration"), "avg_chunk_delay": stats.get("average_chunk_send_delay", 0)})
-                await safe_send_json(ws, {"event": "mark", "streamSid": stream_sid_ref.get("stream_sid"), "mark": {"name": f"nomos-tts-complete-{stats.get('tts_responses_queued', 0)}"}})
+                _write_event(call_id, "twilio_audio_response_sent", {"chunks_sent": response_chunks_sent, "chunks_total": response_chunk_total, "interrupted": reason == "interrupted", "total_chunks_sent": stats.get("tts_chunks_sent", 0), "send_duration": stats.get("last_sender_send_duration"), "avg_chunk_delay": stats.get("average_chunk_send_delay", 0)})
+                if reason == "completed":
+                    await safe_send_json(ws, {"event": "mark", "streamSid": stream_sid_ref.get("stream_sid"), "mark": {"name": f"nomos-tts-complete-{stats.get('tts_responses_queued', 0)}"}})
             except Exception:
                 reason = "send_error"
                 logger.exception("NOMOS_AUDIO_SEND_ERROR call_id=%s", call_id)
@@ -535,16 +605,18 @@ async def media(ws: WebSocket, call_id: int):
     processing_lock = asyncio.Lock()
     processing_tasks: set[asyncio.Task] = set()
     bot_is_speaking = asyncio.Event()
+    playback_interrupt = asyncio.Event()
     stt_cooldown_until = {"until": 0.0}
     settings = _settings_snapshot()
     voice_stats: dict[str, Any] = {"tts_responses_queued": 0, "tts_chunks_queued": 0, "tts_chunks_sent": 0, "dropped_responses": 0, "tts_responses_accepted": 0, "tts_responses_skipped": 0, "stt_suppressed_chunks": 0, "last_bot_speaking_end_reason": None, "last_bot_speaking_duration": 0, "audio_queue_max": settings["outbound_audio_queue_max"]}
     media_chunk_count = 0
+    vad_state: dict[str, Any] = {"speech_chunks": 0, "in_speech": False, "last_speech_at": 0.0}
     last_media_event_at = time.monotonic()
     stt_resume_logged = True
     outbound_audio_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=settings["outbound_audio_queue_max"])
-    sender_task = asyncio.create_task(twilio_audio_sender(ws, stream_sid_ref, outbound_audio_queue, stop_event, call_id, bot_is_speaking, stt_cooldown_until, voice_stats, settings["stt_after_bot_cooldown_ms"]))
+    sender_task = asyncio.create_task(twilio_audio_sender(ws, stream_sid_ref, outbound_audio_queue, stop_event, call_id, bot_is_speaking, stt_cooldown_until, voice_stats, settings["stt_after_bot_cooldown_ms"], playback_interrupt))
     watchdog_task = asyncio.create_task(bot_speaking_watchdog(call_id, bot_is_speaking, stop_event, voice_stats, settings["bot_speaking_max_seconds"]))
-    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None, "outbound_audio_queue": outbound_audio_queue, "bot_is_speaking": bot_is_speaking, "voice_stats": voice_stats, "stt_cooldown_until": stt_cooldown_until, "pending_operator_utterance": ""}
+    ACTIVE_TWILIO_SESSIONS[call_id] = {"ws": ws, "stream_sid": None, "outbound_audio_queue": outbound_audio_queue, "bot_is_speaking": bot_is_speaking, "playback_interrupt": playback_interrupt, "voice_stats": voice_stats, "stt_cooldown_until": stt_cooldown_until, "pending_operator_utterance": ""}
     logger.warning("NOMOS_WS_CONNECTED call_id=%s", call_id)
     logger.warning("NOMOS_RECEIVE_LOOP_STARTED call_id=%s", call_id)
     _write_event(call_id, "websocket_connected", {"voice_safe_mode": settings["voice_safe_mode"]})
@@ -591,25 +663,30 @@ async def media(ws: WebSocket, call_id: int):
                     chunk = mp.get("chunk")
                     timestamp = mp.get("timestamp")
                     audio = base64.b64decode(payload, validate=True) if payload else b""
-                    if settings["barge_in_enabled"] and not outbound_audio_queue.empty():
-                        cleared = _clear_queue(outbound_audio_queue)
-                        logger.warning("NOMOS_BARGE_IN_CLEAR_AUDIO call_id=%s cleared=%s", call_id, cleared)
+                    is_speech_chunk = True
+                    speech_started = False
+                    vad_rms = 0
+                    if settings.get("vad_enabled", True):
+                        is_speech_chunk, speech_started, vad_rms = _vad_update(vad_state, audio, settings)
+                    if settings["barge_in_enabled"] and speech_started and (bot_is_speaking.is_set() or not outbound_audio_queue.empty()):
+                        await _interrupt_twilio_playback(ws, stream_sid_ref, outbound_audio_queue, bot_is_speaking, playback_interrupt, stt_cooldown_until, voice_stats, call_id, "caller_speech_detected")
                     media_chunk_count += 1
                     should_sample_media = media_chunk_count == 1 or media_chunk_count % MEDIA_EVENT_SAMPLE_CHUNKS == 0
                     if should_sample_media:
                         logger.warning("NOMOS_TWILIO_MEDIA chunk=%s timestamp=%s bytes=%s chunk_count=%s", chunk, timestamp, len(audio), media_chunk_count)
-                        _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid"), "chunk_count": media_chunk_count})
+                        _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid"), "chunk_count": media_chunk_count, "vad_rms": vad_rms, "vad_speech": is_speech_chunk})
                         last_media_event_at = time.monotonic()
                     if bot_is_speaking.is_set():
-                        buffer.clear()
-                        last_flush = time.time()
-                        voice_stats["stt_suppressed_chunks"] = voice_stats.get("stt_suppressed_chunks", 0) + 1
-                        suppressed = voice_stats["stt_suppressed_chunks"]
-                        if suppressed == 1 or suppressed % MEDIA_EVENT_SAMPLE_CHUNKS == 0:
-                            logger.warning("NOMOS_STT_SUPPRESSED_BOT_SPEAKING chunk_count=%s", suppressed)
-                            _write_event(call_id, "stt_suppressed_bot_speaking", {"chunk_count": suppressed})
-                        stt_resume_logged = False
-                        continue
+                        if not (settings["barge_in_enabled"] and settings.get("vad_enabled", True) and vad_state.get("in_speech")):
+                            buffer.clear()
+                            last_flush = time.time()
+                            voice_stats["stt_suppressed_chunks"] = voice_stats.get("stt_suppressed_chunks", 0) + 1
+                            suppressed = voice_stats["stt_suppressed_chunks"]
+                            if suppressed == 1 or suppressed % MEDIA_EVENT_SAMPLE_CHUNKS == 0:
+                                logger.warning("NOMOS_STT_SUPPRESSED_BOT_SPEAKING chunk_count=%s", suppressed)
+                                _write_event(call_id, "stt_suppressed_bot_speaking", {"chunk_count": suppressed})
+                            stt_resume_logged = False
+                            continue
                     if time.monotonic() < stt_cooldown_until["until"]:
                         buffer.clear()
                         last_flush = time.time()
