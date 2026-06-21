@@ -22,10 +22,29 @@ class AdminSession(Base, TimestampMixin):
     username: Mapped[str] = mapped_column(String(120))
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
+class Profile(Base):
+    __tablename__ = "profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    customer_name: Mapped[str | None] = mapped_column(String(255))
+    customer_email: Mapped[str | None] = mapped_column(String(255))
+    customer_address: Mapped[str | None] = mapped_column(Text)
+    meter_number: Mapped[str | None] = mapped_column(String(120))
+    market_location_number: Mapped[str | None] = mapped_column(String(120))
+    grid_operator_name: Mapped[str | None] = mapped_column(String(255))
+    target_phone_number: Mapped[str | None] = mapped_column(String(60))
+    language_mode: Mapped[str] = mapped_column(String(20), default="fixed")
+    preferred_language: Mapped[str] = mapped_column(String(10), default="de-DE")
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cases = relationship("Case", back_populates="profile")
+
 class Case(Base):
     __tablename__ = "cases"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     external_case_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    profile_id: Mapped[int | None] = mapped_column(ForeignKey("profiles.id"), index=True)
     case_type: Mapped[str] = mapped_column(String(60), default="unknown")
     scenario: Mapped[str] = mapped_column(String(60), default="correct_malo_id", index=True)
     process_step: Mapped[str | None] = mapped_column(String(80))
@@ -42,8 +61,10 @@ class Case(Base):
     language_mode: Mapped[str] = mapped_column(String(20), default="fixed")
     preferred_language: Mapped[str] = mapped_column(String(10), default="de-DE")
     status: Mapped[str] = mapped_column(String(60), default="pending", index=True)
+    resolution_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    profile = relationship("Profile", back_populates="cases")
     calls = relationship("Call", back_populates="case")
 
 class Call(Base, TimestampMixin):

@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import init_db
-from .routes import auth, dashboard, cases, calls, settings, twilio, websocket
+from .routes import auth, dashboard, cases, calls, profiles, settings, twilio, websocket
 
 app = FastAPI(title='Nomos Clearing Voice Agent')
 templates = Jinja2Templates(directory='app/templates')
@@ -59,5 +59,5 @@ def root_head():
     return JSONResponse(content=None)
 
 
-for r in [auth.router, dashboard.router, cases.router, calls.router, settings.router, twilio.router, websocket.router]:
+for r in [auth.router, dashboard.router, profiles.router, cases.router, calls.router, settings.router, twilio.router, websocket.router]:
     app.include_router(r)
