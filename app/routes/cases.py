@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import ActionRun, Call, CallExtraction, Case
 from app.security import current_admin
+from app.services.scenario_templates import DEFAULT_SCENARIO, SCENARIOS, get_scenario, normalize_scenario, scenario_label
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 STATUSES=['pending','calling','resolved','customer_action_required','escalated','failed','closed']
-FIELDS=['external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','problem_description','required_outcome','language_mode','preferred_language']
+FIELDS=['scenario','external_case_id','case_type','process_step','customer_name','customer_email','customer_address','meter_number','market_location_number','grid_operator_name','target_phone_number','problem_description','required_outcome','language_mode','preferred_language']
 @router.get('/cases')
 def list_cases(request:Request, status:str='', case_type:str='', process_step:str='', language:str='', db:Session=Depends(get_db), admin=Depends(current_admin)):
     q=db.query(Case)
@@ -20,10 +21,14 @@ def list_cases(request:Request, status:str='', case_type:str='', process_step:st
     cases=q.order_by(Case.created_at.desc()).all(); tpl='partials/case_table.html' if request.headers.get('hx-request') else 'cases.html'
     return templates.TemplateResponse(request, tpl, {'title':'Cases','cases':cases})
 @router.get('/cases/new')
-def new_case(request:Request, admin=Depends(current_admin)): return templates.TemplateResponse(request, 'case_form.html', {'title':'Create Case'})
+def new_case(request:Request, admin=Depends(current_admin)): return templates.TemplateResponse(request, 'case_form.html', {'title':'Create Case','scenarios':SCENARIOS,'default_scenario':DEFAULT_SCENARIO})
 @router.post('/cases')
 async def create_case(request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
-    form=await request.form(); data={k:form.get(k) or None for k in FIELDS}; date=form.get('registration_sent_at')
+    form=await request.form(); data={k:form.get(k) or None for k in FIELDS}; data['scenario']=normalize_scenario(data.get('scenario')); scenario=get_scenario(data['scenario'])
+    if not data.get('case_type'): data['case_type']=scenario['case_type']
+    if not data.get('problem_description'): data['problem_description']=scenario['problem_description']
+    if not data.get('required_outcome'): data['required_outcome']=scenario['required_outcome']
+    date=form.get('registration_sent_at')
     if date:
         try: data['registration_sent_at']=datetime.fromisoformat(date)
         except ValueError: pass
@@ -43,14 +48,19 @@ async def import_fixtures(request:Request, file:UploadFile=File(...), db:Session
     for item in items:
         if not isinstance(item, dict):
             continue
-        data={k:item.get(k) for k in FIELDS if k in item}; db.add(Case(**data)); count+=1
+        data={k:item.get(k) for k in FIELDS if k in item}; data['scenario']=normalize_scenario(data.get('scenario')); scenario=get_scenario(data['scenario'])
+        
+        if not data.get('case_type'): data['case_type']=scenario['case_type']
+        if not data.get('problem_description'): data['problem_description']=scenario['problem_description']
+        if not data.get('required_outcome'): data['required_outcome']=scenario['required_outcome']
+        db.add(Case(**data)); count+=1
     db.commit(); return templates.TemplateResponse(request, 'import.html', {'title':'Import Fixtures','result':f'Imported {count} cases'})
 @router.get('/cases/{case_id}')
 def detail(case_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     c=db.get(Case,case_id)
     if not c: raise HTTPException(status_code=404, detail='Case not found')
     calls=db.query(Call).filter_by(case_id=case_id).all(); ex=db.query(CallExtraction).filter_by(case_id=case_id).order_by(CallExtraction.created_at.desc()).first(); ar=db.query(ActionRun).filter_by(case_id=case_id).order_by(ActionRun.created_at.desc()).first()
-    return templates.TemplateResponse(request, 'case_detail.html', {'title':'Case Detail','case':c,'calls':calls,'extraction':ex,'action':ar,'statuses':STATUSES})
+    return templates.TemplateResponse(request, 'case_detail.html', {'title':'Case Detail','case':c,'calls':calls,'extraction':ex,'action':ar,'statuses':STATUSES,'scenario_label':scenario_label,'scenario':get_scenario(c.scenario)})
 @router.post('/cases/{case_id}/status')
 async def status(case_id:int, request:Request, db:Session=Depends(get_db), admin=Depends(current_admin)):
     form=await request.form(); c=db.get(Case,case_id)

@@ -10,6 +10,7 @@ from app.models import ActionRun, Call, CallEvent, CallExtraction, CallTranscrip
 from app.security import current_admin
 from app.services.openai_agent_service import OpenAIAgentService
 from app.services.twilio_service import TwilioService
+from app.services.scenario_templates import scenario_label
 from app.routes.websocket import ACTIVE_TWILIO_SESSIONS, is_valid_user_transcript, send_test_greeting
 from app.settings_service import SettingsService
 
@@ -63,7 +64,7 @@ def call_detail(call_id:int, request:Request, db:Session=Depends(get_db), admin=
     call=db.get(Call,call_id)
     if not call: raise HTTPException(status_code=404, detail='Call not found')
     events=db.query(CallEvent).filter_by(call_id=call_id).all()
-    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all()})
+    return templates.TemplateResponse(request, 'call_detail.html', {'title':'Call Detail','call':call,'events':events,'voice_debug':_voice_debug_summary(db, call_id),'transcripts':db.query(CallTranscript).filter_by(call_id=call_id).all(),'extractions':db.query(CallExtraction).filter_by(call_id=call_id).all(),'actions':db.query(ActionRun).filter_by(call_id=call_id).all(),'scenario_label':scenario_label})
 @router.post('/calls/outbound')
 @router.post('/api/calls/outbound')
 def outbound(case_id:int=Form(...), db:Session=Depends(get_db), admin=Depends(current_admin)):

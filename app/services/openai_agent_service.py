@@ -7,6 +7,7 @@ import httpx
 
 from app.agents.clearing_agent import ALLOWED_PHASES, LIVE_VOICE_SYSTEM_PROMPT, digit_words, normalize_spoken_digits, similar
 from app.models import Call, CallState, CallTranscript
+from app.services.scenario_templates import get_scenario, normalize_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,18 @@ def _asdict_state(state: CallState) -> dict[str, Any]:
 
 def _empty_updates() -> dict[str, None]:
     return {field: None for field in UPDATE_FIELDS}
+
+def _scenario_context(case) -> dict[str, Any]:
+    scenario_key = normalize_scenario(getattr(case, "scenario", None))
+    template = get_scenario(scenario_key)
+    return {
+        "scenario": scenario_key,
+        "scenario_label": template["label"],
+        "agent_goal": template["agent_goal"],
+        "expected_fields": template["expected_fields"],
+        "success_conditions": template["success_conditions"],
+        "next_action_options": template["next_action_options"],
+    }
 
 
 class OpenAIAgentService:
@@ -123,7 +136,15 @@ class OpenAIAgentService:
         if re.fullmatch(r"(yes|yeah|correct|right|that'?s correct|ja|richtig|stimmt|ok|okay)[.! ]*", text): intents.add("confirms_yes")
         if re.fullmatch(r"(no|nope|nein)[.! ]*", text): intents.add("denies_no")
         if digits and (len(digits) < MALO_LENGTH or _state_attr(state, "partial_malo_digits")): intents.add("partial_number_continuation")
-        if re.search(r"in progress|ongoing|still open|open|bearbeitung|läuft", text):
+        if re.search(r"inactive|no longer active|removed|temporary|construction meter|being built|baustrom|ausgebaut|inaktiv", text):
+            intents.add("provides_information"); field = "meter_status"
+            if re.search(r"removed|ausgebaut", text):
+                value = "removed"
+            elif re.search(r"active", text) and not re.search(r"inactive|no longer active", text):
+                value = "active"
+            else:
+                value = "inactive"
+        elif re.search(r"in progress|ongoing|still open|open|bearbeitung|läuft", text):
             intents.add("provides_information"); field = "registration_status"; value = "in_progress"
         elif re.search(r"reject|rejected|ablehn", text):
             intents.add("provides_information"); field = "registration_status"; value = "rejected"
@@ -167,7 +188,8 @@ class OpenAIAgentService:
         if not key:
             logger.warning("NOMOS_DETERMINISTIC_FALLBACK_USED reason=missing_openai_api_key")
             return self._policy(call, state, transcript, intent)
-        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "conversation_directive": directive, "case_details": {"address": call.case.customer_address, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "instruction": "Return only valid JSON. Follow memory and priority rules: do not ask for known fields; acknowledge frustration; one short human question max."}
+        scenario_context = _scenario_context(call.case)
+        payload = {"response_schema": {"spoken_reply": "string", "phase": "opening | waiting_for_operator_identity | waiting_for_case_result | collecting_malo_number | confirming_malo_number | waiting_for_next_step | operator_checking | closing | completed", "extracted_updates": {field: "string|null" for field in UPDATE_FIELDS}, "should_speak": True, "should_end_call": False, "reason": "short explanation"}, "scenario_context": scenario_context, "conversation_directive": directive, "case_details": {"scenario": scenario_context["scenario"], "scenario_label": scenario_context["scenario_label"], "address": call.case.customer_address, "meter_number": call.case.meter_number, "market_location_number": call.case.market_location_number, "problem": call.case.problem_description, "required_outcome": call.case.required_outcome}, "current_call_state": _asdict_state(state), "last_10_transcript_turns": [{"role": t.speaker, "text": t.text, "language": t.language, "source": t.source, "confidence": t.confidence} for t in turns], "latest_operator_transcript": transcript, "operator_intent": intent, "instruction": "Return only valid JSON. Follow the selected scenario. For inactive_meter ask about active/removed/temporary/construction-meter status and customer contact; do not force MaLo unless relevant. Follow memory and priority rules: do not ask for known fields; acknowledge frustration; one short human question max."}
         try:
             async with httpx.AsyncClient(timeout=20) as c:
                 r = await c.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {key}'}, json={'model': self.settings.get('openai_model', 'gpt-4.1-mini'), 'temperature': float(self.settings.get('openai_temperature', '0.2') or 0.2), 'messages': [{'role': 'system', 'content': LIVE_VOICE_SYSTEM_PROMPT}, {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}], 'response_format': {'type': 'json_object'}})
@@ -203,7 +225,7 @@ class OpenAIAgentService:
         return result
 
     def _directive(self, call, state, transcript: str, intent: dict[str, Any], extra_instruction: str | None = None) -> dict[str, Any]:
-        directive_type, phase, missing, facts = self._next_step(state, intent)
+        directive_type, phase, missing, facts = self._next_step(call, state, intent)
         examples = [
             {"operator": "What are you talking about?", "good_agent": "Sorry, let me clarify. I’m calling about the registration for Musterstraße 12 in Mainz-Kastel. We need to confirm the correct market location number for that address."},
             {"operator": "I already told you. It is in progress.", "good_agent": "You're right, thank you. I have the status as in progress. I’m only missing the corrected market location number."},
@@ -212,10 +234,18 @@ class OpenAIAgentService:
             {"operator": "Eight zero zero four nine one two three.", "good_agent": "Thank you. I have five one two eight zero zero four nine one two three. Is that correct?"},
             {"operator": "Yes, correct. Resend it.", "good_agent": "Understood. I’ve noted the corrected number and that Nomos should resend the registration. Thank you for your help."},
         ]
-        return {"directive_type": directive_type, "phase": phase, "missing_fields": missing, "known_fields": {"address": call.case.customer_address, "original_market_location_number": call.case.market_location_number, **{k: v for k, v in _asdict_state(state).items() if v}}, "latest_operator_message": transcript, "operator_intent": intent, "facts_to_confirm": facts, "priority_order": ["clarify case if confused", "corrected_market_location_number", "confirmation of number", "next_action", "reference_number", "close"], "do_not_say": ["current result for this clearing case", "Do not sound like an IVR.", "Do not ask for fields already captured."], "style_examples": examples, "notes_for_llm": "Use at most two short sentences. Acknowledge frustration/confusion. Ask only for the highest-priority missing item." + (f" Extra instruction: {extra_instruction}" if extra_instruction else ""), "tone": "natural, concise, professional", "extracted_updates": _empty_updates()}
+        return {"directive_type": directive_type, "phase": phase, "missing_fields": missing, "scenario": _scenario_context(call.case), "known_fields": {"address": call.case.customer_address, "meter_number": call.case.meter_number, "original_market_location_number": call.case.market_location_number, **{k: v for k, v in _asdict_state(state).items() if v}}, "latest_operator_message": transcript, "operator_intent": intent, "facts_to_confirm": facts, "priority_order": ["clarify case if confused", "corrected_market_location_number", "confirmation of number", "next_action", "reference_number", "close"], "do_not_say": ["current result for this clearing case", "Do not sound like an IVR.", "Do not ask for fields already captured."], "style_examples": examples, "notes_for_llm": "Use at most two short sentences. Acknowledge frustration/confusion. Ask only for the highest-priority missing item." + (f" Extra instruction: {extra_instruction}" if extra_instruction else ""), "tone": "natural, concise, professional", "extracted_updates": _empty_updates()}
 
-    def _next_step(self, state, intent):
+    def _next_step(self, call, state, intent):
         intents = set(intent["intents"]); facts=[]
+        if normalize_scenario(getattr(call.case, "scenario", None)) == "inactive_meter":
+            if "asks_to_wait" in intents: return "acknowledge_wait", state.phase, [], facts
+            if intents & {"asks_clarification", "asks_human_like_clarification"}: return "clarify_case", "waiting_for_case_result", ["meter_status"], facts
+            if state.meter_status:
+                facts.append(f"meter_status={state.meter_status}")
+                if state.next_action: return "close_safely", "completed", [], facts
+                return "ask_customer_contact_or_retry", "waiting_for_next_step", ["next_action"], facts
+            return "collect_meter_status", "waiting_for_case_result", ["meter_status", "temporary_meter", "customer_contact_required"], facts
         if "asks_to_wait" in intents: return "acknowledge_wait", state.phase, [], facts
         if intents & {"asks_clarification", "asks_human_like_clarification"}: return "clarify_case", "collecting_malo_number", ["corrected_market_location_number"], facts
         if state.corrected_market_location_number:
@@ -229,14 +259,26 @@ class OpenAIAgentService:
         return "collect_market_location_number", "collecting_malo_number", ["corrected_market_location_number"], facts
 
     def _policy(self, call, state, transcript: str, intent: dict[str, Any] | None = None, force_alternative: bool = False):
-        intent = intent or self._classify_intent(transcript, state); intents = set(intent["intents"]); updates = _empty_updates()
+        intent = intent or self._classify_intent(transcript, state); intents = set(intent["intents"]); updates = _empty_updates(); scenario = normalize_scenario(getattr(call.case, "scenario", None))
         if "asks_to_wait" in intents: return {"spoken_reply": "Of course, I’ll wait.", "phase": state.phase, "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "operator asked to wait"}
-        if intents & {"asks_clarification", "asks_human_like_clarification"}: return {"spoken_reply": f"Sorry, let me clarify. I’m calling about the registration for {call.case.customer_address}. Can you see the correct market location number for that address?", "phase": "collecting_malo_number", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
+        if intents & {"asks_clarification", "asks_human_like_clarification"}:
+            if scenario == "inactive_meter":
+                return {"spoken_reply": f"Sorry, let me clarify. I’m calling about the registration for {call.case.customer_address}. Can you confirm whether meter {call.case.meter_number or 'the meter'} is active, removed, or was temporary?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
+            return {"spoken_reply": f"Sorry, let me clarify. I’m calling about the registration for {call.case.customer_address}. Can you see the correct market location number for that address?", "phase": "collecting_malo_number", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "clarification requested"}
         prefix = "I’m sorry, you’re right. " if "expresses_frustration" in intents else ""
+        if scenario == "inactive_meter":
+            if intent.get("field") == "meter_status" and intent.get("value"):
+                updates["meter_status"] = intent["value"]
+                updates["next_action"] = "notify_customer_by_email" if intent["value"] in {"inactive", "removed"} else "retry_registration"
+                return {"spoken_reply": "Understood. Was this a temporary construction meter, and should Nomos contact the customer for updated meter details?", "phase": "waiting_for_next_step", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "meter status captured"}
+            if "confirms_yes" in intents and state.meter_status in {"inactive", "removed"}:
+                updates["meter_status"] = state.meter_status; updates["next_action"] = "notify_customer_by_email"
+                return {"spoken_reply": "Thank you. I’ve noted that the meter is no longer active and Nomos should contact the customer. Goodbye.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "inactive meter resolved"}
+            return {"spoken_reply": f"{prefix}Can you confirm whether meter {call.case.meter_number or 'the meter'} is active, removed, or was only a temporary construction meter?", "phase": "waiting_for_case_result", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "ask inactive meter fields"}
         if state.corrected_market_location_number and ("confirms_yes" in intents or re.search(r"resend|send", (transcript or "").lower())):
             updates["corrected_market_location_number"] = state.corrected_market_location_number
             if re.search(r"resend|send|erneut", (transcript or "").lower()):
-                updates["next_action"] = "resend_registration"; return {"spoken_reply": "Understood. I’ve noted the corrected number and that Nomos should resend the registration. Thank you for your help.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "confirmed number and next action"}
+                updates["next_action"] = "update_malo_and_retry_registration"; return {"spoken_reply": "Understood. I’ve noted the corrected number and that Nomos should update the MaLo and retry the registration. Thank you for your help.", "phase": "completed", "extracted_updates": updates, "should_speak": True, "should_end_call": True, "reason": "confirmed number and next action"}
             return {"spoken_reply": "Thank you. Can Nomos resend the registration with the corrected number?", "phase": "waiting_for_next_step", "extracted_updates": updates, "should_speak": True, "should_end_call": False, "reason": "number confirmed"}
         if state.corrected_market_location_number:
             updates["corrected_market_location_number"] = state.corrected_market_location_number
@@ -253,4 +295,26 @@ class OpenAIAgentService:
 
     async def extract(self, case, transcripts, events):
         text = ' '.join(t.text for t in transcripts)
-        return {"outcome": "unclear", "root_cause": text[:500] or None, "market_location_number": case.market_location_number, "corrected_market_location_number": None, "meter_number": case.meter_number, "meter_status": "unknown", "reference_number": None, "registration_status": "unknown", "next_action": "none", "plain_language_note": "MVP extraction generated from saved transcript.", "confidence": 0.5}
+        return self._deterministic_extract(case, text)
+
+    def _deterministic_extract(self, case, text: str):
+        scenario = normalize_scenario(getattr(case, "scenario", None))
+        low = (text or "").lower()
+        data = {"scenario": scenario, "outcome": "in_progress", "root_cause": text[:500] or None, "plain_language_note": "MVP extraction generated from saved transcript.", "next_action": "needs_manual_review", "reference_number": None, "market_location_number": case.market_location_number, "original_market_location_number": case.market_location_number, "corrected_market_location_number": None, "meter_number": case.meter_number, "meter_status": "unknown", "registration_status": "unknown", "confidence": 0.5}
+        if scenario == "inactive_meter":
+            inactive = "no longer active" in low or "inactive" in low
+            removed = "removed" in low
+            temporary = "temporary" in low or "construction" in low or "being built" in low
+            contact = "contact the customer" in low or ("customer" in low and "yes" in low)
+            data.update({"meter_status": "removed" if removed else "inactive" if inactive else "active" if "is active" in low else "unknown", "meter_inactive_reason": "Temporary construction meter; no longer active." if temporary else None, "temporary_meter": True if temporary else None, "customer_contact_required": True if contact else None})
+            if data["meter_status"] in {"inactive", "removed"}:
+                data["next_action"] = "notify_customer_by_email"; data["outcome"] = "resolved"
+            elif data["meter_status"] == "active":
+                data["next_action"] = "retry_registration"; data["outcome"] = "resolved"
+            if inactive and temporary:
+                data["plain_language_note"] = "Grid operator confirmed that the meter is no longer active because it was only used during construction. Nomos should contact the customer for updated meter details."
+        else:
+            digits = re.findall(r"\b\d{10,14}\b", text or "")
+            if digits:
+                data["corrected_market_location_number"] = digits[-1]; data["next_action"] = "update_malo_and_retry_registration" if re.search(r"retry|resend|again", low) else "needs_manual_review"; data["outcome"] = "resolved"
+        return data
