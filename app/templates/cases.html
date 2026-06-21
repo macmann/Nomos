@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="toolbar"><a class="button button-primary" href="/cases/new">Create Case</a><a class="button button-secondary" href="/cases/import-fixtures">Import Fixtures JSON</a></div>
+<div class="toolbar"><a class="button button-primary" href="/cases/new">Create Case</a></div>
 <form class="filter-form" hx-get="/cases" hx-target="#case-table" hx-indicator="#case-loading">
   <input name="status" placeholder="Status">
   <input name="case_type" placeholder="Case type">
