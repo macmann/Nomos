@@ -6,6 +6,8 @@ limited mono PCM/µ-law operations used by the Twilio audio pipeline.
 
 from __future__ import annotations
 
+import math
+
 BIAS = 0x84
 CLIP = 32635
 
@@ -32,6 +34,20 @@ def _write_sample(value: int, width: int) -> bytes:
     minimum = -(1 << (bits - 1))
     maximum = (1 << (bits - 1)) - 1
     return int(max(minimum, min(maximum, value))).to_bytes(width, "little", signed=True)
+
+
+def rms(fragment: bytes, width: int) -> int:
+    """Return the root-mean-square of a mono PCM fragment.
+
+    Mirrors the subset of :mod:`audioop.rms` needed by the VAD path: samples
+    are interpreted as signed little-endian PCM values using ``width`` bytes,
+    and an empty fragment has zero energy.
+    """
+    samples = _sample_count(fragment, width)
+    if samples == 0:
+        return 0
+    square_sum = sum(_read_sample(fragment, i, width) ** 2 for i in range(samples))
+    return math.isqrt(square_sum // samples)
 
 
 def tomono(fragment: bytes, width: int, lfactor: float, rfactor: float) -> bytes:
