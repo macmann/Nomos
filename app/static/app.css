@@ -123,3 +123,36 @@ body:before{right:-120px}
 .signoff{position:static;margin-top:34px}
 }
 
+
+.settings-tabs{display:grid;gap:22px;overflow:hidden}
+.settings-tab-input{position:absolute;opacity:0;pointer-events:none}
+.settings-tab-list{display:flex;flex-wrap:wrap;gap:8px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.settings-tab-label{display:inline-flex;align-items:center;justify-content:center;border:1px solid #c7c7c7;border-radius:999px;background:rgba(255,255,255,.45);color:var(--muted);padding:10px 15px;font-size:.76rem;font-weight:850;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;transition:background .15s ease,color .15s ease,border-color .15s ease}
+.settings-tab-label:hover{background:#000;border-color:#000;color:#fff}
+.settings-tab-panels{display:grid}
+.settings-tab-panel{display:none}
+.settings-section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}
+.settings-section-header h2{margin:0;font-size:clamp(1.8rem,4vw,3.2rem);line-height:.98;font-weight:500;letter-spacing:-.06em}
+.settings-eyebrow{margin:0 0 10px;text-align:left}
+.settings-section-actions{justify-content:flex-end;margin:0}
+.settings-tabs:has(#settings-tab-1:checked) .settings-tab-label[for="settings-tab-1"],
+.settings-tabs:has(#settings-tab-2:checked) .settings-tab-label[for="settings-tab-2"],
+.settings-tabs:has(#settings-tab-3:checked) .settings-tab-label[for="settings-tab-3"],
+.settings-tabs:has(#settings-tab-4:checked) .settings-tab-label[for="settings-tab-4"],
+.settings-tabs:has(#settings-tab-5:checked) .settings-tab-label[for="settings-tab-5"],
+.settings-tabs:has(#settings-tab-6:checked) .settings-tab-label[for="settings-tab-6"],
+.settings-tabs:has(#settings-tab-7:checked) .settings-tab-label[for="settings-tab-7"]{background:#000;border-color:#000;color:#fff}
+.settings-tabs:has(#settings-tab-1:checked) .settings-tab-panel:nth-child(1),
+.settings-tabs:has(#settings-tab-2:checked) .settings-tab-panel:nth-child(2),
+.settings-tabs:has(#settings-tab-3:checked) .settings-tab-panel:nth-child(3),
+.settings-tabs:has(#settings-tab-4:checked) .settings-tab-panel:nth-child(4),
+.settings-tabs:has(#settings-tab-5:checked) .settings-tab-panel:nth-child(5),
+.settings-tabs:has(#settings-tab-6:checked) .settings-tab-panel:nth-child(6),
+.settings-tabs:has(#settings-tab-7:checked) .settings-tab-panel:nth-child(7){display:block}
+
+@media (max-width:900px){
+.settings-section-header{display:grid}
+.settings-section-actions{justify-content:flex-start}
+.settings-tab-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.settings-tab-label{width:100%}
+}
