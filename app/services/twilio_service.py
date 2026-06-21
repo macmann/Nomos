@@ -39,8 +39,8 @@ def convert_audio_to_twilio_mulaw_8khz(audio_bytes: bytes, input_format: str) ->
     raise ValueError(f"Unsupported audio input_format for local Twilio conversion: {input_format}")
 
 
-def convert_twilio_mulaw_to_wav_pcm16k(audio_bytes: bytes) -> bytes:
-    pcm8 = audioop.ulaw2lin(audio_bytes, 2)
+def convert_twilio_mulaw_to_wav_pcm16_16khz(mulaw_bytes: bytes) -> bytes:
+    pcm8 = audioop.ulaw2lin(mulaw_bytes, 2)
     pcm16, _ = audioop.ratecv(pcm8, 2, 1, 8000, 16000, None)
     out = io.BytesIO()
     with wave.open(out, "wb") as wav:
@@ -48,7 +48,12 @@ def convert_twilio_mulaw_to_wav_pcm16k(audio_bytes: bytes) -> bytes:
         wav.setsampwidth(2)
         wav.setframerate(16000)
         wav.writeframes(pcm16)
-    return out.getvalue()
+    wav_bytes = out.getvalue()
+    return wav_bytes
+
+
+def convert_twilio_mulaw_to_wav_pcm16k(audio_bytes: bytes) -> bytes:
+    return convert_twilio_mulaw_to_wav_pcm16_16khz(audio_bytes)
 
 
 class TwilioService:
