@@ -43,8 +43,16 @@ def _voice_debug_summary(db, call_id):
         'last_invalid_stt_transcript': (last_invalid_stt.event_payload or {}).get('text') if last_invalid_stt else None,
         'last_agent_response': (last_agent_response.event_payload or {}).get('text') if last_agent_response else None,
         'bot_is_speaking': bool(session.get('bot_is_speaking') and session['bot_is_speaking'].is_set()),
+        'bot_speaking_started_at': stats.get('bot_speaking_started_at'),
+        'bot_speaking_duration': stats.get('last_bot_speaking_duration', 0),
+        'stt_suppressed_chunks': stats.get('stt_suppressed_chunks', max((int((e.event_payload or {}).get('chunk_count') or 0) for e in events if e.event_type == 'stt_suppressed_bot_speaking'), default=0)),
+        'last_bot_speaking_end_reason': stats.get('last_bot_speaking_end_reason') or ((next((e for e in reversed(events) if e.event_type == 'bot_speaking_end'), None).event_payload or {}).get('reason') if next((e for e in reversed(events) if e.event_type == 'bot_speaking_end'), None) else None),
+        'audio_queue_size': session.get('outbound_audio_queue').qsize() if session.get('outbound_audio_queue') else 0,
+        'audio_queue_max': stats.get('audio_queue_max') or (session.get('outbound_audio_queue').maxsize if session.get('outbound_audio_queue') else None),
+        'tts_responses_accepted': stats.get('tts_responses_accepted', len([e for e in events if e.event_type == 'twilio_audio_queued'])),
+        'tts_responses_skipped': stats.get('tts_responses_skipped', len([e for e in events if e.event_type == 'audio_queue_backpressure' and (e.event_payload or {}).get('action') == 'skip_new_response'])),
         'agent_responses_queued_to_tts': stats.get('tts_responses_queued', len([e for e in events if e.event_type == 'agent_tts_queued'])),
-        'tts_chunks_sent': stats.get('tts_chunks_sent', 0),
+        'tts_chunks_sent': stats.get('tts_chunks_sent', len([e for e in events if e.event_type == 'twilio_audio_chunk_sent'])),
     }
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
