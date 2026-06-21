@@ -61,6 +61,8 @@ def _voice_debug_summary(db, call_id):
         'last_sender_send_duration': stats.get('last_sender_send_duration'),
         'dropped_responses': stats.get('dropped_responses', 0),
         'average_chunk_send_delay': stats.get('average_chunk_send_delay', 0),
+        'barge_in_interrupts': stats.get('barge_in_interrupts', len([e for e in events if e.event_type == 'barge_in_interrupt'])),
+        'last_interrupt_reason': stats.get('last_interrupt_reason') or ((next((e for e in reversed(events) if e.event_type == 'barge_in_interrupt'), None).event_payload or {}).get('reason') if next((e for e in reversed(events) if e.event_type == 'barge_in_interrupt'), None) else None),
     }
 router=APIRouter(); templates=Jinja2Templates(directory='app/templates')
 @router.get('/calls')
