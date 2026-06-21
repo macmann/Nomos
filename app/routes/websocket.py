@@ -21,6 +21,9 @@ router = APIRouter()
 ACTIVE_TWILIO_SESSIONS: dict[int, dict[str, Any]] = {}
 GREETING = "Guten Tag, ich bin ein KI-Assistent von Nomos. Dies ist ein kurzer Verbindungstest."
 INVALID_TRANSCRIPTS = {"(screeching noise)", "[noise]", "(noise)", "[silence]", "(silence)", ""}
+TWILIO_AUDIO_CHUNK_BYTES = 160
+TWILIO_AUDIO_CHUNK_SECONDS = 0.02
+MEDIA_EVENT_SAMPLE_CHUNKS = 50
 
 
 def _bool_setting(value: Any, default: bool = False) -> bool:
@@ -141,7 +144,7 @@ def _clear_queue(queue: asyncio.Queue[bytes]) -> int:
             return cleared
 
 
-async def queue_twilio_audio(call_id: int, queue: asyncio.Queue[bytes], audio: bytes, chunk_size: int = 160) -> None:
+async def queue_twilio_audio(call_id: int, queue: asyncio.Queue[bytes], audio: bytes, chunk_size: int = TWILIO_AUDIO_CHUNK_BYTES) -> None:
     chunks = [audio[i:i + chunk_size] for i in range(0, len(audio), chunk_size) if audio[i:i + chunk_size]]
     if not chunks:
         return
@@ -163,6 +166,7 @@ async def queue_twilio_audio(call_id: int, queue: asyncio.Queue[bytes], audio: b
 async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | None], queue: asyncio.Queue[bytes], stop_event: asyncio.Event, call_id: int) -> None:
     logger.warning("NOMOS_AUDIO_SENDER_STARTED call_id=%s", call_id)
     chunk_index = 0
+    next_send_at = time.monotonic()
     try:
         while not stop_event.is_set():
             try:
@@ -173,6 +177,9 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
             if not stream_sid:
                 queue.task_done()
                 continue
+            delay = next_send_at - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
             ok = await safe_send_json(ws, {"event": "media", "streamSid": stream_sid, "media": {"payload": base64.b64encode(chunk).decode("ascii")}})
             queue.task_done()
             if not ok:
@@ -180,8 +187,9 @@ async def twilio_audio_sender(ws: WebSocket, stream_sid_ref: dict[str, str | Non
                 stop_event.set()
                 break
             chunk_index += 1
-            logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s", chunk_index)
-            await asyncio.sleep(0.02)
+            if chunk_index == 1 or chunk_index % MEDIA_EVENT_SAMPLE_CHUNKS == 0:
+                logger.warning("NOMOS_AUDIO_CHUNK_SENT chunk_index=%s", chunk_index)
+            next_send_at = time.monotonic() + TWILIO_AUDIO_CHUNK_SECONDS
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -296,6 +304,8 @@ async def media(ws: WebSocket, call_id: int):
     stop_event = asyncio.Event()
     processing_lock = asyncio.Lock()
     processing_tasks: set[asyncio.Task] = set()
+    media_chunk_count = 0
+    last_media_event_at = time.monotonic()
     settings = _settings_snapshot()
     outbound_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=settings["outbound_audio_queue_max"])
     sender_task = asyncio.create_task(twilio_audio_sender(ws, stream_sid_ref, outbound_audio_queue, stop_event, call_id))
@@ -348,10 +358,15 @@ async def media(ws: WebSocket, call_id: int):
                     if settings["barge_in_enabled"] and not outbound_audio_queue.empty():
                         cleared = _clear_queue(outbound_audio_queue)
                         logger.warning("NOMOS_BARGE_IN_CLEAR_AUDIO call_id=%s cleared=%s", call_id, cleared)
-                    logger.warning("NOMOS_TWILIO_MEDIA chunk=%s timestamp=%s bytes=%s", chunk, timestamp, len(audio))
-                    _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid")})
+                    media_chunk_count += 1
+                    should_sample_media = media_chunk_count == 1 or media_chunk_count % MEDIA_EVENT_SAMPLE_CHUNKS == 0 or time.monotonic() - last_media_event_at >= 1.0
+                    if should_sample_media:
+                        logger.warning("NOMOS_TWILIO_MEDIA chunk=%s timestamp=%s bytes=%s chunk_count=%s", chunk, timestamp, len(audio), media_chunk_count)
+                        _write_event(call_id, "twilio_media_received", {"chunk": chunk, "timestamp": timestamp, "bytes": len(audio), "streamSid": msg.get("streamSid") or stream_sid_ref.get("stream_sid"), "chunk_count": media_chunk_count})
+                        last_media_event_at = time.monotonic()
                     buffer.extend(audio)
-                    logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
+                    if should_sample_media:
+                        logger.warning("NOMOS_STT_BUFFER_BYTES bytes=%s", len(buffer))
                     if len(buffer) >= settings["stt_flush_bytes"] or (buffer and time.time() - last_flush >= settings["stt_flush_seconds"]):
                         if processing_lock.locked():
                             logger.warning("NOMOS_STT_FLUSH_SKIPPED_PROCESSING_BUSY bytes=%s", len(buffer))

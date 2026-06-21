@@ -21,13 +21,16 @@ def _bool_setting(value, default=False):
 def _voice_debug_summary(db, call_id):
     events = db.query(CallEvent).filter_by(call_id=call_id).all()
     media_events = [e for e in events if e.event_type == 'twilio_media_received']
+    media_count = max((int((e.event_payload or {}).get('chunk_count') or 0) for e in media_events), default=0)
+    if not media_count:
+        media_count = len(media_events)
     last_media = media_events[-1].event_payload.get('timestamp') if media_events and media_events[-1].event_payload else None
     last_error = next((e for e in reversed(events) if e.event_type in {'error','websocket_error'}), None)
     ss = SettingsService(db, get_settings().app_encryption_key)
     return {
         'websocket_connected': any(e.event_type == 'websocket_connected' for e in events),
         'twilio_start': any(e.event_type == 'twilio_start_received' for e in events),
-        'media_count': len(media_events),
+        'media_count': media_count,
         'last_media_timestamp': last_media,
         'last_error': last_error,
         'voice_safe_mode': _bool_setting(ss.get('voice_safe_mode', 'true'), True),
